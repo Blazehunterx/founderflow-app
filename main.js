@@ -333,6 +333,45 @@ async function captureCookies() {
   return { success: false, error: 'No valid session found. Click "Login to Instagram" first.' };
 }
 
+// ── Config Download from Dashboard ────────────────
+async function downloadConfig(event, workspaceId) {
+  try {
+    const https = require('https');
+    const url = `https://founderflow-dashboard.vercel.app/api/client/config?workspace_id=${workspaceId}`;
+
+    return new Promise((resolve, reject) => {
+      https.get(url, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const config = JSON.parse(data);
+            if (config.error) { resolve({ success: false, error: config.error }); return; }
+
+            // Preserve existing igSession if present
+            let existing = {};
+            if (fs.existsSync(CONFIG_PATH)) {
+              try { existing = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch {}
+            }
+            config.igSession = existing.igSession || null;
+
+            if (!fs.existsSync(ENGINE_DIR)) fs.mkdirSync(ENGINE_DIR, { recursive: true });
+            fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+
+            resolve({ success: true, workspaceName: config.workspaceName });
+          } catch (e) {
+            resolve({ success: false, error: 'Invalid response from server' });
+          }
+        });
+      }).on('error', (e) => {
+        resolve({ success: false, error: e.message });
+      });
+    });
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
 // ── Settings ──────────────────────────────────────
 function loadSettings() {
   if (!fs.existsSync(CONFIG_PATH)) return {};
@@ -452,6 +491,7 @@ ipcMain.handle('app:open-instagram', openInstagramLogin);
 ipcMain.handle('app:capture-cookies', captureCookies);
 ipcMain.handle('app:load-settings', loadSettings);
 ipcMain.handle('app:save-settings', saveSettings);
+ipcMain.handle('app:download-config', downloadConfig);
 ipcMain.handle('app:install-deps', installDependencies);
 ipcMain.handle('app:open-engine-dir', () => shell.openPath(ENGINE_DIR));
 ipcMain.handle('app:quit', () => app.quit());

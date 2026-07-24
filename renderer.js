@@ -66,18 +66,28 @@ async function checkEnvironment() {
     setupBody.appendChild(depsStep);
   }
 
-  // Step 3: Instagram Login
+  // Step 3: Connect to Dashboard (fetch config)
+  const hasConfig = env.configExists;
+  if (!hasConfig) {
+    const connectStep = createStep('active', '3', 'Connect to Dashboard', 'Enter your Workspace ID to fetch config', 'connect-dashboard');
+    setupBody.appendChild(connectStep);
+  } else {
+    const connectStep = createStep('done', '3', 'Connect to Dashboard', 'Config loaded ✓', null);
+    setupBody.appendChild(connectStep);
+  }
+
+  // Step 4: Instagram Login
   if (!env.hasSession) {
-    const igStep = createStep('active', '3', 'Instagram', 'Not logged in', 'ig-login');
+    const igStep = createStep('active', '4', 'Instagram', 'Not logged in', 'ig-login');
     setupBody.appendChild(igStep);
     setDot('igPill', 'active');
   } else {
-    const igStep = createStep('done', '3', 'Instagram', 'Logged in ✓', null);
+    const igStep = createStep('done', '4', 'Instagram', 'Logged in ✓', null);
     setupBody.appendChild(igStep);
     setDot('igPill', 'ok');
 
-    // Step 4: Ready
-    const readyStep = createStep('done', '4', 'Ready', 'All checks passed. Start the engine.', null);
+    // Step 5: Ready
+    const readyStep = createStep('done', '5', 'Ready', 'All checks passed. Start the engine.', null);
     setupBody.appendChild(readyStep);
   }
 
@@ -108,6 +118,59 @@ function createStep(state, num, title, desc, action) {
 
   content.appendChild(titleEl);
   content.appendChild(descEl);
+
+  if (action === 'connect-dashboard') {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'Paste your Workspace ID here';
+    input.style.cssText = 'width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid rgba(99,102,241,0.3); background: rgba(99,102,241,0.08); color: #e2e8f0; font-size: 12px; margin-bottom: 8px; box-sizing: border-box;';
+
+    const btn = document.createElement('button');
+    btn.className = 'step-btn';
+    btn.textContent = 'Connect';
+    btn.onclick = async () => {
+      const wsId = input.value.trim();
+      if (!wsId) { appendLog('Please enter your Workspace ID', 'error'); return; }
+      btn.disabled = true;
+      btn.textContent = 'Connecting...';
+      appendLog('Fetching config from dashboard...', 'info');
+
+      const result = await window.api.downloadConfig(wsId);
+
+      if (result.success) {
+        descEl.textContent = `Connected to ${result.workspaceName || 'workspace'} ✓`;
+        icon.className = 'step-icon done';
+        icon.textContent = '✓';
+        input.remove();
+        btn.remove();
+        appendLog(`Connected to ${result.workspaceName || 'workspace'}`, 'success');
+
+        // Re-run environment check to update session status
+        env = await window.api.checkEnvironment();
+        const setupBody = document.getElementById('setupBody');
+
+        if (!env.hasSession) {
+          const igStep = createStep('active', '4', 'Instagram', 'Not logged in', 'ig-login');
+          setupBody.appendChild(igStep);
+          setDot('igPill', 'active');
+        } else {
+          const igStep = createStep('done', '4', 'Instagram', 'Logged in ✓', null);
+          setupBody.appendChild(igStep);
+          setDot('igPill', 'ok');
+          const readyStep = createStep('done', '5', 'Ready', 'All checks passed. Start the engine.', null);
+          setupBody.appendChild(readyStep);
+        }
+      } else {
+        descEl.textContent = result.error;
+        icon.className = 'step-icon error';
+        btn.textContent = 'Retry';
+        btn.disabled = false;
+        appendLog(`Connect failed: ${result.error}`, 'error');
+      }
+    };
+    content.appendChild(input);
+    content.appendChild(btn);
+  }
 
   if (action === 'ig-login') {
     const btn = document.createElement('button');
