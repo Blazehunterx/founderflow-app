@@ -1,0 +1,61 @@
+{
+  "name": "founderflow",
+  "version": "1.0.0",
+  "description": "FounderFlow — AI Client Acquisition System",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "node build.js && electron-builder --win",
+    "build:mac": "node build.js && electron-builder --mac",
+    "build": "node build.js"
+  },
+  "build": {
+    "appId": "com.founderflow.engine",
+    "productName": "FounderFlow",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "assets/**/*",
+      "engine/**/*",
+      "node-runtime/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "engine/",
+        "to": "engine"
+      },
+      {
+        "from": "node-runtime/",
+        "to": "node-runtime"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "mac": {
+      "target": "zip",
+      "icon": "assets/icon.png",
+      "category": "public.app-category.business"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.png"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "dependencies": {
+    "@mherod/get-cookie": "^1.0.0",
+    "playwright-core": "^1.61.1"
+  }
+}

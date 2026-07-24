@@ -1,0 +1,22 @@
+{
+  "name": "antigravity-client-engine",
+  "version": "3.0.0",
+  "description": "Local Instagram Outreach + AI Setter + Harvester",
+  "main": "start.cjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node start.cjs",
+    "dm": "node start.cjs dm",
+    "harvest": "node start.cjs harvest",
+    "both": "node start.cjs both",
+    "login": "node login.cjs"
+  },
+  "dependencies": {
+    "playwright": "1.40.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "adm-zip": "^0.5.10",
+    "ws": "^8.16.0"
+  }
+}

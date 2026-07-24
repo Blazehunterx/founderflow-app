@@ -1,0 +1,7 @@
+node_modules/
+dist/
+engine/node_modules/
+engine/sessions/
+engine/sessions2/
+engine/founderflow_sessions/
+*.lock

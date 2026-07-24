@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FounderFlow</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Title bar drag region (Mac) -->
+  <div class="titlebar" id="titlebar">
+    <div class="titlebar-text">FounderFlow</div>
+  </div>
+
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">FOUNDER<span>FLOW</span></div>
+      <div class="subtitle">AI Client Acquisition System</div>
+    </header>
+
+    <!-- Status Overview -->
+    <div class="status-overview" id="statusOverview">
+      <div class="status-pill" id="envPill">
+        <span class="status-dot pending" id="envDot"></span>
+        <span>Environment</span>
+      </div>
+      <div class="status-pill" id="igPill">
+        <span class="status-dot pending" id="igDot"></span>
+        <span>Instagram</span>
+      </div>
+      <div class="status-pill" id="enginePill">
+        <span class="status-dot pending" id="engineDot"></span>
+        <span>Engine</span>
+      </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <!-- Left: Setup + Logs -->
+      <div class="panel-left">
+        <!-- Setup Steps -->
+        <div class="card" id="setupCard">
+          <div class="card-header">Setup</div>
+          <div class="card-body" id="setupBody">
+            <!-- Populated by renderer.js -->
+          </div>
+        </div>
+
+        <!-- Live Logs -->
+        <div class="card card-logs">
+          <div class="card-header">
+            <span>Live Logs</span>
+            <span class="log-count" id="logCount">0</span>
+          </div>
+          <div class="card-body logs" id="logArea">
+            <div class="log-entry info">FounderFlow ready. Complete setup to start the engine.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Settings + Controls -->
+      <div class="panel-right">
+        <!-- Controls -->
+        <div class="card" id="controlCard">
+          <div class="card-header">Controls</div>
+          <div class="card-body">
+            <div class="engine-status" id="engineStatusDisplay">
+              <span class="status-dot stopped" id="engineStatusDot"></span>
+              <span id="engineStatusText">Stopped</span>
+            </div>
+            <div class="controls">
+              <button class="btn btn-primary" id="btnStart" onclick="startEngine()">▶ Start</button>
+              <button class="btn btn-secondary" id="btnPause" onclick="pauseEngine()" disabled>⏸ Pause</button>
+              <button class="btn btn-danger" id="btnStop" onclick="stopEngine()" disabled>⏹ Stop</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settings -->
+        <div class="card card-settings">
+          <div class="card-header">Settings</div>
+          <div class="card-body settings-body">
+            <div class="setting-group">
+              <label>Opening Message</label>
+              <textarea id="settingDmTemplate" rows="4" placeholder="Hi {{name}}, I love what you're doing with {{handle}}!"></textarea>
+            </div>
+            <div class="setting-group">
+              <label>AI Setter Training</label>
+              <textarea id="settingAiContext" rows="4" placeholder="You are a warm, professional outreach assistant..."></textarea>
+            </div>
+            <div class="setting-group">
+              <label>Calendly Link</label>
+              <input type="url" id="settingCalendly" placeholder="https://calendly.com/yourname/meeting">
+            </div>
+            <div class="setting-group">
+              <label>Follow-up Delays (days)</label>
+              <div class="delay-inputs">
+                <input type="number" id="delay0" min="1" max="30" value="3">
+                <input type="number" id="delay1" min="1" max="30" value="5">
+                <input type="number" id="delay2" min="1" max="30" value="7">
+              </div>
+            </div>
+            <div class="setting-group">
+              <label>Niche Tags</label>
+              <input type="text" id="settingNiche" placeholder="coach, fitness, consultant">
+            </div>
+            <button class="btn btn-primary btn-full" onclick="saveSettings()">Save Settings</button>
+            <div class="setting-note">Changes sync to Supabase. Engine picks them up on next pulse (~1 hour).</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
