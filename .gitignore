@@ -10,4 +10,5 @@ engine/*.txt
 engine/state.json
 engine/fingerprint.json
 engine/comment_scan_state.json
+engine/config.json
 *.lock
