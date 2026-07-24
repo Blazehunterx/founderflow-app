@@ -372,6 +372,59 @@ async function downloadConfig(event, workspaceId) {
   }
 }
 
+// ── Config Refresh from Dashboard (settings only) ─
+async function refreshConfig() {
+  try {
+    let workspaceId = null;
+    if (fs.existsSync(CONFIG_PATH)) {
+      try {
+        const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+        workspaceId = config.workspaceId;
+      } catch {}
+    }
+    if (!workspaceId) {
+      return { success: false, error: 'No workspace configured. Connect to dashboard first.' };
+    }
+
+    mainWindow?.webContents.send('engine:log', 'Refreshing settings from dashboard...');
+
+    const https = require('https');
+    const url = `https://founderflow-dashboard.vercel.app/api/client/config?workspace_id=${workspaceId}`;
+
+    return new Promise((resolve) => {
+      https.get(url, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const config = JSON.parse(data);
+            if (config.error) { resolve({ success: false, error: config.error }); return; }
+
+            // Preserve igSession
+            let existing = {};
+            if (fs.existsSync(CONFIG_PATH)) {
+              try { existing = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch {}
+            }
+            config.igSession = existing.igSession || null;
+
+            if (!fs.existsSync(ENGINE_DIR)) fs.mkdirSync(ENGINE_DIR, { recursive: true });
+            fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+
+            mainWindow?.webContents.send('engine:log', 'Settings refreshed from dashboard.');
+            resolve({ success: true, workspaceName: config.workspaceName });
+          } catch (e) {
+            resolve({ success: false, error: 'Invalid response from server' });
+          }
+        });
+      }).on('error', (e) => {
+        resolve({ success: false, error: e.message });
+      });
+    });
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
 // ── Engine Update from Dashboard ──────────────────
 async function updateEngine() {
   try {
@@ -589,6 +642,7 @@ ipcMain.handle('app:capture-cookies', captureCookies);
 ipcMain.handle('app:load-settings', loadSettings);
 ipcMain.handle('app:save-settings', saveSettings);
 ipcMain.handle('app:download-config', downloadConfig);
+ipcMain.handle('app:refresh-config', refreshConfig);
 ipcMain.handle('app:update-engine', updateEngine);
 ipcMain.handle('app:install-deps', installDependencies);
 ipcMain.handle('app:open-engine-dir', () => shell.openPath(ENGINE_DIR));

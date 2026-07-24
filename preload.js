@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   loadSettings: () => ipcRenderer.invoke('app:load-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('app:save-settings', settings),
   downloadConfig: (workspaceId) => ipcRenderer.invoke('app:download-config', workspaceId),
+  refreshConfig: () => ipcRenderer.invoke('app:refresh-config'),
   updateEngine: () => ipcRenderer.invoke('app:update-engine'),
 
   // Dependencies

@@ -291,19 +291,39 @@ async function pauseEngine() {
 async function updateEngine() {
   const btn = document.getElementById('btnUpdate');
   btn.disabled = true;
-  btn.textContent = '🔄 Updating...';
-  appendLog('Checking for updates...', 'info');
+  btn.textContent = '⬇ Updating...';
+  appendLog('Downloading engine update...', 'info');
 
   const result = await window.api.updateEngine();
 
   if (result.success) {
-    appendLog('Update complete! Engine is up to date.', 'success');
-    btn.textContent = '✅ Up to Date';
-    setTimeout(() => { btn.textContent = '🔄 Check for Updates'; btn.disabled = false; }, 3000);
+    appendLog('Engine updated! All files are up to date.', 'success');
+    btn.textContent = '✅ Updated';
+    setTimeout(() => { btn.textContent = '⬇ Update Engine'; btn.disabled = false; }, 3000);
   } else {
     appendLog(`Update failed: ${result.error}`, 'error');
-    btn.textContent = '❌ Update Failed';
-    setTimeout(() => { btn.textContent = '🔄 Check for Updates'; btn.disabled = false; }, 3000);
+    btn.textContent = '❌ Failed';
+    setTimeout(() => { btn.textContent = '⬇ Update Engine'; btn.disabled = false; }, 3000);
+  }
+}
+
+async function refreshConfig() {
+  const btn = document.getElementById('btnRefresh');
+  btn.disabled = true;
+  btn.textContent = '🔄 Syncing...';
+  appendLog('Refreshing settings from dashboard...', 'info');
+
+  const result = await window.api.refreshConfig();
+
+  if (result.success) {
+    appendLog(`Settings refreshed from ${result.workspaceName || 'dashboard'}`, 'success');
+    btn.textContent = '✅ Synced';
+    await loadSettings();
+    setTimeout(() => { btn.textContent = '🔄 Refresh Settings'; btn.disabled = false; }, 3000);
+  } else {
+    appendLog(`Refresh failed: ${result.error}`, 'error');
+    btn.textContent = '❌ Failed';
+    setTimeout(() => { btn.textContent = '🔄 Refresh Settings'; btn.disabled = false; }, 3000);
   }
 }
 
