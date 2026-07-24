@@ -1,7 +1,13 @@
 node_modules/
+node-runtime/
 dist/
 engine/node_modules/
 engine/sessions/
 engine/sessions2/
 engine/founderflow_sessions/
+engine/*.log
+engine/*.txt
+engine/state.json
+engine/fingerprint.json
+engine/comment_scan_state.json
 *.lock
