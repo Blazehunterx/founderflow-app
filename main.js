@@ -372,6 +372,103 @@ async function downloadConfig(event, workspaceId) {
   }
 }
 
+// ── Engine Update from Dashboard ──────────────────
+async function updateEngine() {
+  try {
+    // Read workspace_id from config
+    let workspaceId = null;
+    if (fs.existsSync(CONFIG_PATH)) {
+      try {
+        const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+        workspaceId = config.workspaceId;
+      } catch {}
+    }
+    if (!workspaceId) {
+      return { success: false, error: 'No workspace configured. Connect to dashboard first.' };
+    }
+
+    mainWindow?.webContents.send('engine:log', 'Downloading update from dashboard...');
+
+    // Stop engine if running
+    if (engineProcess) {
+      engineProcess.kill('SIGTERM');
+      engineProcess = null;
+      engineState = 'stopped';
+      mainWindow?.webContents.send('engine:status', 'stopped');
+    }
+
+    // Download ZIP
+    const https = require('https');
+    const zipPath = path.join(USER_DATA, 'update.zip');
+    const url = `https://founderflow-dashboard.vercel.app/api/client/download?engine_update=1&workspace_id=${workspaceId}`;
+
+    await new Promise((resolve, reject) => {
+      const file = fs.createWriteStream(zipPath);
+      https.get(url, (res) => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`Download failed (HTTP ${res.statusCode})`));
+          return;
+        }
+        res.pipe(file);
+        file.on('finish', () => { file.close(); resolve(); });
+      }).on('error', (e) => {
+        fs.unlink(zipPath, () => {});
+        reject(e);
+      });
+    });
+
+    mainWindow?.webContents.send('engine:log', 'Download complete. Extracting...');
+
+    // Preserve config.json and sessions
+    const configBackup = fs.existsSync(CONFIG_PATH) ? fs.readFileSync(CONFIG_PATH, 'utf8') : null;
+    const sessionDir = path.join(ENGINE_DIR, 'sessions');
+    const sessionExists = fs.existsSync(sessionDir);
+
+    // Extract with PowerShell
+    if (process.platform === 'win32') {
+      execSync(`powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${ENGINE_DIR}' -Force"`, {
+        encoding: 'utf8',
+        timeout: 60000,
+      });
+    } else {
+      execSync(`unzip -o "${zipPath}" -d "${ENGINE_DIR}"`, {
+        encoding: 'utf8',
+        timeout: 60000,
+      });
+    }
+
+    // Restore config.json
+    if (configBackup) {
+      fs.writeFileSync(CONFIG_PATH, configBackup);
+    }
+
+    // Re-sync engine files from resources (updates bundled engine files)
+    syncEngineFiles();
+
+    // Restore config again (syncEngineFiles might overwrite)
+    if (configBackup) {
+      fs.writeFileSync(CONFIG_PATH, configBackup);
+    }
+
+    // Clean up
+    fs.unlinkSync(zipPath);
+
+    mainWindow?.webContents.send('engine:log', 'Update complete! Engine files updated.');
+
+    // Re-install deps if package.json changed
+    const nodeModulesExists = fs.existsSync(path.join(ENGINE_DIR, 'node_modules'));
+    if (!nodeModulesExists) {
+      mainWindow?.webContents.send('engine:log', 'Installing updated dependencies...');
+      await installDependencies();
+    }
+
+    return { success: true };
+  } catch (e) {
+    mainWindow?.webContents.send('engine:error', `Update failed: ${e.message}`);
+    return { success: false, error: e.message };
+  }
+}
+
 // ── Settings ──────────────────────────────────────
 function loadSettings() {
   if (!fs.existsSync(CONFIG_PATH)) return {};
@@ -492,6 +589,7 @@ ipcMain.handle('app:capture-cookies', captureCookies);
 ipcMain.handle('app:load-settings', loadSettings);
 ipcMain.handle('app:save-settings', saveSettings);
 ipcMain.handle('app:download-config', downloadConfig);
+ipcMain.handle('app:update-engine', updateEngine);
 ipcMain.handle('app:install-deps', installDependencies);
 ipcMain.handle('app:open-engine-dir', () => shell.openPath(ENGINE_DIR));
 ipcMain.handle('app:quit', () => app.quit());

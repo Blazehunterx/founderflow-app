@@ -288,6 +288,25 @@ async function pauseEngine() {
   await window.api.resumeEngine(); // Resume since we paused
 }
 
+async function updateEngine() {
+  const btn = document.getElementById('btnUpdate');
+  btn.disabled = true;
+  btn.textContent = '🔄 Updating...';
+  appendLog('Checking for updates...', 'info');
+
+  const result = await window.api.updateEngine();
+
+  if (result.success) {
+    appendLog('Update complete! Engine is up to date.', 'success');
+    btn.textContent = '✅ Up to Date';
+    setTimeout(() => { btn.textContent = '🔄 Check for Updates'; btn.disabled = false; }, 3000);
+  } else {
+    appendLog(`Update failed: ${result.error}`, 'error');
+    btn.textContent = '❌ Update Failed';
+    setTimeout(() => { btn.textContent = '🔄 Check for Updates'; btn.disabled = false; }, 3000);
+  }
+}
+
 // ── Settings ────────────────────────────────────
 async function loadSettings() {
   const settings = await window.api.loadSettings();
