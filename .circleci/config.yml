@@ -1,0 +1,30 @@
+version: 2.1
+
+jobs:
+  build-mac:
+    macos:
+      xcode: "15.4.0"
+    steps:
+      - checkout
+      - run:
+          name: Setup Node.js
+          command: |
+            brew install node@22
+            brew link node@22
+      - run:
+          name: Install dependencies
+          command: npm ci
+      - run:
+          name: Install Playwright browsers
+          command: npx playwright install chromium
+      - run:
+          name: Build Mac app
+          command: npx electron-builder --mac
+      - store_artifacts:
+          path: dist
+          destination: mac-build
+
+workflows:
+  build:
+    jobs:
+      - build-mac

@@ -13,7 +13,40 @@ const isDev = !app.isPackaged;
 const ENGINE_DIR = isDev
   ? path.join(__dirname, 'engine')
   : path.join(USER_DATA, 'engine');
+const ENGINE_SOURCE = isDev
+  ? path.join(__dirname, 'engine')
+  : path.join(process.resourcesPath, 'engine');
 const CONFIG_PATH = path.join(ENGINE_DIR, 'config.json');
+
+function syncEngineFiles() {
+  if (isDev) return;
+  if (!fs.existsSync(ENGINE_SOURCE)) return;
+  if (!fs.existsSync(ENGINE_DIR)) fs.mkdirSync(ENGINE_DIR, { recursive: true });
+
+  const files = fs.readdirSync(ENGINE_SOURCE);
+  for (const file of files) {
+    const src = path.join(ENGINE_SOURCE, file);
+    const dest = path.join(ENGINE_DIR, file);
+    const stat = fs.statSync(src);
+    if (stat.isDirectory()) {
+      if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+      // Recurse into subdirectories (but skip node_modules, sessions)
+      if (['node_modules', 'sessions', 'sessions2', 'founderflow_sessions'].includes(file)) continue;
+      const subFiles = fs.readdirSync(src);
+      for (const sub of subFiles) {
+        const subSrc = path.join(src, sub);
+        const subDest = path.join(dest, sub);
+        if (!fs.existsSync(subDest)) {
+          fs.copyFileSync(subSrc, subDest);
+        }
+      }
+    } else {
+      // Overwrite config.json only if it doesn't exist (preserve user edits)
+      if (file === 'config.json' && fs.existsSync(dest)) continue;
+      if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
+    }
+  }
+}
 
 // Bundled Node.js path (inside app resources)
 function getNodePath() {
@@ -424,7 +457,7 @@ ipcMain.handle('app:open-engine-dir', () => shell.openPath(ENGINE_DIR));
 ipcMain.handle('app:quit', () => app.quit());
 
 // ── App Lifecycle ─────────────────────────────────
-app.whenReady().then(createWindow);
+app.whenReady().then(() => { syncEngineFiles(); createWindow(); });
 
 app.on('window-all-closed', () => {
   stopEngine();

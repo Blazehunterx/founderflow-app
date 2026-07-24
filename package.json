@@ -5,9 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build:win": "node build.js && electron-builder --win",
-    "build:mac": "node build.js && electron-builder --mac",
-    "build": "node build.js"
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac"
   },
   "build": {
     "appId": "com.founderflow.engine",
@@ -22,21 +21,33 @@
       "index.html",
       "styles.css",
       "assets/**/*",
-      "engine/**/*",
-      "node-runtime/**/*"
+      "!engine/node_modules",
+      "!engine/sessions",
+      "!engine/sessions2",
+      "!engine/founderflow_sessions",
+      "!engine/*.log",
+      "!engine/*.txt",
+      "!engine/state.json",
+      "!engine/fingerprint.json",
+      "!engine/comment_scan_state.json",
+      "!engine/engine.log"
     ],
     "extraResources": [
       {
         "from": "engine/",
-        "to": "engine"
-      },
-      {
-        "from": "node-runtime/",
-        "to": "node-runtime"
+        "to": "engine",
+        "filter": [
+          "**/*.cjs",
+          "**/*.json",
+          "!**/node_modules/**",
+          "!**/sessions/**",
+          "!**/sessions2/**",
+          "!**/founderflow_sessions/**"
+        ]
       }
     ],
     "win": {
-      "target": "nsis",
+      "target": "portable",
       "icon": "assets/icon.png"
     },
     "mac": {
@@ -50,12 +61,12 @@
       "installerIcon": "assets/icon.png"
     }
   },
+  "author": "Marvin",
   "devDependencies": {
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0"
   },
   "dependencies": {
-    "@mherod/get-cookie": "^1.0.0",
     "playwright-core": "^1.61.1"
   }
 }
