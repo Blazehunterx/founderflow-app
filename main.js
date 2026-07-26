@@ -65,16 +65,23 @@ function getNodePath() {
     return false;
   }
 
-  // Check bundled runtime first
-  let bundledPath;
+  // Check bundled runtime — try current arch first, then other arch
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const otherArch = arch === 'arm64' ? 'x64' : 'arm64';
+  const candidates = [];
+
   if (platform === 'win32') {
-    bundledPath = path.join(process.resourcesPath, 'node-runtime', 'node.exe');
+    candidates.push(path.join(process.resourcesPath, 'node-runtime', 'node.exe'));
+    candidates.push(path.join(process.resourcesPath, 'node-runtime', arch, 'node.exe'));
   } else {
-    bundledPath = path.join(process.resourcesPath, 'node-runtime', 'bin', 'node');
+    // Mac/Linux: try top-level first, then arch subdirs
+    candidates.push(path.join(process.resourcesPath, 'node-runtime', 'bin', 'node'));
+    candidates.push(path.join(process.resourcesPath, 'node-runtime', arch, 'bin', 'node'));
+    candidates.push(path.join(process.resourcesPath, 'node-runtime', otherArch, 'bin', 'node'));
   }
 
-  if (fs.existsSync(bundledPath) && testNode(bundledPath)) {
-    return bundledPath;
+  for (const p of candidates) {
+    if (fs.existsSync(p) && testNode(p)) return p;
   }
 
   // Fallback: try system node on Mac/Linux via common paths
@@ -84,23 +91,37 @@ function getNodePath() {
       '/usr/local/bin/node',
       '/opt/homebrew/bin/node',
       '/usr/bin/node',
-      path.join(process.env.HOME || '', '.nvm/versions/node', fs.readdirSync(path.join(process.env.HOME || '', '.nvm/versions/node')).filter(d => d.startsWith('v')).pop() || '', 'bin/node'),
     ];
+    // Try nvm paths
+    try {
+      const home = process.env.HOME || '';
+      const nvmDir = path.join(home, '.nvm', 'versions', 'node');
+      if (fs.existsSync(nvmDir)) {
+        const versions = fs.readdirSync(nvmDir).filter(d => d.startsWith('v')).sort().reverse();
+        if (versions.length > 0) {
+          commonPaths.push(path.join(nvmDir, versions[0], 'bin', 'node'));
+        }
+      }
+    } catch {}
+    // Try fnm paths
+    try {
+      const home = process.env.HOME || '';
+      const fnmDir = path.join(home, '.local', 'share', 'fnm', 'node-versions');
+      if (fs.existsSync(fnmDir)) {
+        const versions = fs.readdirSync(fnmDir).filter(d => d.startsWith('v')).sort().reverse();
+        if (versions.length > 0) {
+          commonPaths.push(path.join(fnmDir, versions[0], 'installation', 'bin', 'node'));
+        }
+      }
+    } catch {}
+
     for (const p of commonPaths) {
       if (testNode(p)) return p;
     }
   }
 
-  // Fallback: try system node via which
-  if (platform === 'darwin' || platform === 'linux') {
-    try {
-      const whichPath = execSync('which node', { encoding: 'utf8', stdio: 'pipe' }).trim();
-      if (whichPath && testNode(whichPath)) return whichPath;
-    } catch {}
-  }
-
   // Last resort: return expected path even if missing (will show error)
-  return bundledPath;
+  return candidates[0];
 }
 
 // ── Window ────────────────────────────────────────
