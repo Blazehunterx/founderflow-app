@@ -56,6 +56,15 @@ function getNodePath() {
   }
   const platform = process.platform;
 
+  // Helper: test if a node binary actually works
+  function testNode(binPath) {
+    try {
+      const v = execSync(`"${binPath}" --version`, { encoding: 'utf8', stdio: 'pipe', timeout: 5000 });
+      if (v && v.trim().startsWith('v')) return true;
+    } catch {}
+    return false;
+  }
+
   // Check bundled runtime first
   let bundledPath;
   if (platform === 'win32') {
@@ -64,22 +73,29 @@ function getNodePath() {
     bundledPath = path.join(process.resourcesPath, 'node-runtime', 'bin', 'node');
   }
 
-  if (fs.existsSync(bundledPath)) {
+  if (fs.existsSync(bundledPath) && testNode(bundledPath)) {
     return bundledPath;
   }
 
-  // Fallback: check for fallback marker (bundled wrong platform)
-  const fallbackPath = path.join(process.resourcesPath, 'node-runtime', '.fallback');
-  if (fs.existsSync(fallbackPath)) {
-    console.log('[getNodePath] Using system node (fallback mode)');
-    return 'node';
+  // Fallback: try system node on Mac/Linux via common paths
+  if (platform === 'darwin' || platform === 'linux') {
+    const commonPaths = [
+      'node',
+      '/usr/local/bin/node',
+      '/opt/homebrew/bin/node',
+      '/usr/bin/node',
+      path.join(process.env.HOME || '', '.nvm/versions/node', fs.readdirSync(path.join(process.env.HOME || '', '.nvm/versions/node')).filter(d => d.startsWith('v')).pop() || '', 'bin/node'),
+    ];
+    for (const p of commonPaths) {
+      if (testNode(p)) return p;
+    }
   }
 
-  // Fallback: try system node on Mac/Linux
+  // Fallback: try system node via which
   if (platform === 'darwin' || platform === 'linux') {
     try {
-      execSync('which node', { encoding: 'utf8', stdio: 'pipe' });
-      return 'node';
+      const whichPath = execSync('which node', { encoding: 'utf8', stdio: 'pipe' }).trim();
+      if (whichPath && testNode(whichPath)) return whichPath;
     } catch {}
   }
 
