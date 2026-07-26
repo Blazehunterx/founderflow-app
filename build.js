@@ -47,6 +47,9 @@ if (fs.existsSync(DEST_NODE)) {
 }
 fs.mkdirSync(DEST_NODE, { recursive: true });
 
+// On Mac, download BOTH arm64 and x64 so the app works on any Mac
+const macArchs = platform === 'darwin' ? ['arm64', 'x64'] : [arch];
+
 try {
   // Get current Node.js version
   const nodeVersion = execSync('node --version', { encoding: 'utf8' }).trim();
@@ -54,33 +57,54 @@ try {
 
   // Download Node.js binary for distribution
   const version = nodeVersion.replace('v', '');
-  let downloadUrl;
 
-  if (platform === 'win32') {
-    downloadUrl = `https://nodejs.org/dist/v${version}/node-v${version}-win-${arch}.zip`;
-    console.log(`   Downloading: ${downloadUrl}`);
-    execSync(`powershell -Command "Invoke-WebRequest -Uri '${downloadUrl}' -OutFile '${path.join(DEST_NODE, 'node.zip')}'"`, { stdio: 'inherit' });
-    execSync(`powershell -Command "Expand-Archive -Path '${path.join(DEST_NODE, 'node.zip')}' -DestinationPath '${DEST_NODE}' -Force"`, { stdio: 'inherit' });
-    // Move files up from nested directory
-    const nestedDir = path.join(DEST_NODE, `node-v${version}-win-${arch}`);
-    if (fs.existsSync(nestedDir)) {
-      for (const item of fs.readdirSync(nestedDir)) {
-        fs.renameSync(path.join(nestedDir, item), path.join(DEST_NODE, item));
-      }
-      fs.rmSync(nestedDir, { recursive: true });
+  for (const dlArch of macArchs) {
+    const archDir = platform === 'darwin' ? path.join(DEST_NODE, dlArch) : DEST_NODE;
+    if (dlArch !== arch || platform !== 'darwin') {
+      fs.mkdirSync(archDir, { recursive: true });
     }
-    fs.rmSync(path.join(DEST_NODE, 'node.zip'), { force: true });
-    console.log('   ✓ Node.js downloaded (Windows)');
-  } else if (platform === 'darwin') {
-    downloadUrl = `https://nodejs.org/dist/v${version}/node-v${version}-darwin-${arch}.tar.gz`;
-    console.log(`   Downloading: ${downloadUrl}`);
-    execSync(`curl -L "${downloadUrl}" | tar -xz -C "${DEST_NODE}" --strip-components=1`, { stdio: 'inherit' });
-    console.log('   ✓ Node.js downloaded (Mac)');
-  } else {
-    downloadUrl = `https://nodejs.org/dist/v${version}/node-v${version}-linux-${arch}.tar.xz`;
-    console.log(`   Downloading: ${downloadUrl}`);
-    execSync(`curl -L "${downloadUrl}" | tar -xJ -C "${DEST_NODE}" --strip-components=1`, { stdio: 'inherit' });
-    console.log('   ✓ Node.js downloaded (Linux)');
+
+    let downloadUrl;
+    if (platform === 'win32') {
+      downloadUrl = `https://nodejs.org/dist/v${version}/node-v${version}-win-${dlArch}.zip`;
+      console.log(`   Downloading: ${downloadUrl}`);
+      execSync(`powershell -Command "Invoke-WebRequest -Uri '${downloadUrl}' -OutFile '${path.join(archDir, 'node.zip')}'"`, { stdio: 'inherit' });
+      execSync(`powershell -Command "Expand-Archive -Path '${path.join(archDir, 'node.zip')}' -DestinationPath '${archDir}' -Force"`, { stdio: 'inherit' });
+      const nestedDir = path.join(archDir, `node-v${version}-win-${dlArch}`);
+      if (fs.existsSync(nestedDir)) {
+        for (const item of fs.readdirSync(nestedDir)) {
+          fs.renameSync(path.join(nestedDir, item), path.join(archDir, item));
+        }
+        fs.rmSync(nestedDir, { recursive: true });
+      }
+      fs.rmSync(path.join(archDir, 'node.zip'), { force: true });
+      console.log(`   ✓ Node.js downloaded (Windows ${dlArch})`);
+    } else if (platform === 'darwin') {
+      downloadUrl = `https://nodejs.org/dist/v${version}/node-v${version}-darwin-${dlArch}.tar.gz`;
+      console.log(`   Downloading: ${downloadUrl}`);
+      execSync(`curl -L "${downloadUrl}" | tar -xz -C "${archDir}" --strip-components=1`, { stdio: 'inherit' });
+      // Strip quarantine attribute so macOS doesn't block the binary
+      try {
+        execSync(`xattr -rd com.apple.quarantine "${archDir}" 2>/dev/null || true`, { stdio: 'pipe' });
+      } catch {}
+      console.log(`   ✓ Node.js downloaded (Mac ${dlArch})`);
+    } else {
+      downloadUrl = `https://nodejs.org/dist/v${version}/node-v${version}-linux-${dlArch}.tar.xz`;
+      console.log(`   Downloading: ${downloadUrl}`);
+      execSync(`curl -L "${downloadUrl}" | tar -xJ -C "${archDir}" --strip-components=1`, { stdio: 'inherit' });
+      console.log(`   ✓ Node.js downloaded (Linux ${dlArch})`);
+    }
+  }
+
+  // On Mac, also put the current arch binary at the top level for the app to find
+  if (platform === 'darwin') {
+    const srcBin = path.join(DEST_NODE, arch, 'bin', 'node');
+    const destBin = path.join(DEST_NODE, 'bin', 'node');
+    fs.mkdirSync(path.join(DEST_NODE, 'bin'), { recursive: true });
+    if (fs.existsSync(srcBin)) {
+      fs.copyFileSync(srcBin, destBin);
+      console.log(`   ✓ Set default binary to ${arch}`);
+    }
   }
 } catch (err) {
   console.log('   ⚠ Could not download Node.js. App will use system Node.js.');
