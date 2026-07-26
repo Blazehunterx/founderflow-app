@@ -44,6 +44,10 @@
           "!**/sessions2/**",
           "!**/founderflow_sessions/**"
         ]
+      },
+      {
+        "from": "node-runtime/",
+        "to": "node-runtime"
       }
     ],
     "win": {

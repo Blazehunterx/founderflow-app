@@ -18,6 +18,9 @@ jobs:
           name: Install Playwright browsers
           command: npx playwright install chromium
       - run:
+          name: Bundle engine + Node.js runtime
+          command: node build.js
+      - run:
           name: Build Mac app
           command: npx electron-builder --mac
       - store_artifacts:

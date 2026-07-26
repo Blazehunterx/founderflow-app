@@ -55,10 +55,36 @@ function getNodePath() {
     return 'node'; // Use system node in dev
   }
   const platform = process.platform;
+
+  // Check bundled runtime first
+  let bundledPath;
   if (platform === 'win32') {
-    return path.join(process.resourcesPath, 'node-runtime', 'node.exe');
+    bundledPath = path.join(process.resourcesPath, 'node-runtime', 'node.exe');
+  } else {
+    bundledPath = path.join(process.resourcesPath, 'node-runtime', 'bin', 'node');
   }
-  return path.join(process.resourcesPath, 'node-runtime', 'bin', 'node');
+
+  if (fs.existsSync(bundledPath)) {
+    return bundledPath;
+  }
+
+  // Fallback: check for fallback marker (bundled wrong platform)
+  const fallbackPath = path.join(process.resourcesPath, 'node-runtime', '.fallback');
+  if (fs.existsSync(fallbackPath)) {
+    console.log('[getNodePath] Using system node (fallback mode)');
+    return 'node';
+  }
+
+  // Fallback: try system node on Mac/Linux
+  if (platform === 'darwin' || platform === 'linux') {
+    try {
+      execSync('which node', { encoding: 'utf8', stdio: 'pipe' });
+      return 'node';
+    } catch {}
+  }
+
+  // Last resort: return expected path even if missing (will show error)
+  return bundledPath;
 }
 
 // ── Window ────────────────────────────────────────
