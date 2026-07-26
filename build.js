@@ -48,21 +48,19 @@ if (fs.existsSync(DEST_NODE)) {
 fs.mkdirSync(DEST_NODE, { recursive: true });
 
 // On Mac, download BOTH arm64 and x64 so the app works on any Mac
-const macArchs = platform === 'darwin' ? ['arm64', 'x64'] : [arch];
+const archsToDownload = platform === 'darwin' ? ['arm64', 'x64'] : [arch];
 
 try {
   // Get current Node.js version
   const nodeVersion = execSync('node --version', { encoding: 'utf8' }).trim();
   console.log(`   Current Node.js: ${nodeVersion}`);
 
-  // Download Node.js binary for distribution
   const version = nodeVersion.replace('v', '');
 
-  for (const dlArch of macArchs) {
-    const archDir = platform === 'darwin' ? path.join(DEST_NODE, dlArch) : DEST_NODE;
-    if (dlArch !== arch || platform !== 'darwin') {
-      fs.mkdirSync(archDir, { recursive: true });
-    }
+  for (const dlArch of archsToDownload) {
+    console.log(`\n   --- Downloading ${dlArch} ---`);
+    const archDir = path.join(DEST_NODE, dlArch);
+    fs.mkdirSync(archDir, { recursive: true });
 
     let downloadUrl;
     if (platform === 'win32') {
@@ -78,36 +76,38 @@ try {
         fs.rmSync(nestedDir, { recursive: true });
       }
       fs.rmSync(path.join(archDir, 'node.zip'), { force: true });
-      console.log(`   ✓ Node.js downloaded (Windows ${dlArch})`);
+      console.log(`   OK Node.js downloaded (Windows ${dlArch})`);
     } else if (platform === 'darwin') {
       downloadUrl = `https://nodejs.org/dist/v${version}/node-v${version}-darwin-${dlArch}.tar.gz`;
       console.log(`   Downloading: ${downloadUrl}`);
-      execSync(`curl -L "${downloadUrl}" | tar -xz -C "${archDir}" --strip-components=1`, { stdio: 'inherit' });
+      execSync(`curl -L "${downloadUrl}" | tar -xz -C "${archDir}" --strip-components=1`, { stdio: 'inherit', timeout: 120000 });
       // Strip quarantine attribute so macOS doesn't block the binary
       try {
         execSync(`xattr -rd com.apple.quarantine "${archDir}" 2>/dev/null || true`, { stdio: 'pipe' });
       } catch {}
-      console.log(`   ✓ Node.js downloaded (Mac ${dlArch})`);
+      console.log(`   OK Node.js downloaded (Mac ${dlArch})`);
     } else {
       downloadUrl = `https://nodejs.org/dist/v${version}/node-v${version}-linux-${dlArch}.tar.xz`;
       console.log(`   Downloading: ${downloadUrl}`);
-      execSync(`curl -L "${downloadUrl}" | tar -xJ -C "${archDir}" --strip-components=1`, { stdio: 'inherit' });
-      console.log(`   ✓ Node.js downloaded (Linux ${dlArch})`);
+      execSync(`curl -L "${downloadUrl}" | tar -xJ -C "${archDir}" --strip-components=1`, { stdio: 'inherit', timeout: 120000 });
+      console.log(`   OK Node.js downloaded (Linux ${dlArch})`);
     }
   }
 
-  // On Mac, also put the current arch binary at the top level for the app to find
-  if (platform === 'darwin') {
-    const srcBin = path.join(DEST_NODE, arch, 'bin', 'node');
-    const destBin = path.join(DEST_NODE, 'bin', 'node');
-    fs.mkdirSync(path.join(DEST_NODE, 'bin'), { recursive: true });
-    if (fs.existsSync(srcBin)) {
-      fs.copyFileSync(srcBin, destBin);
-      console.log(`   ✓ Set default binary to ${arch}`);
+  // Verify both binaries exist
+  for (const dlArch of archsToDownload) {
+    const nodeBin = platform === 'win32'
+      ? path.join(DEST_NODE, dlArch, 'node.exe')
+      : path.join(DEST_NODE, dlArch, 'bin', 'node');
+    if (fs.existsSync(nodeBin)) {
+      const stat = fs.statSync(nodeBin);
+      console.log(`   Verified ${dlArch}: ${nodeBin} (${Math.round(stat.size / 1024 / 1024)}MB)`);
+    } else {
+      console.log(`   WARNING: ${dlArch} binary NOT found at ${nodeBin}`);
     }
   }
 } catch (err) {
-  console.log('   ⚠ Could not download Node.js. App will use system Node.js.');
+  console.log('   Could not download Node.js. App will use system Node.js.');
   console.log(`   Error: ${err.message}`);
   // Write a marker so the app knows to fall back to system node
   fs.writeFileSync(path.join(DEST_NODE, '.fallback'), 'use system node');
