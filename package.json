@@ -55,7 +55,7 @@
       "icon": "assets/icon.png"
     },
     "mac": {
-      "target": "zip",
+      "target": "dmg",
       "icon": "assets/icon.png",
       "category": "public.app-category.business"
     },
