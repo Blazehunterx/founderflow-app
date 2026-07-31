@@ -22,11 +22,24 @@ jobs:
           command: node build.js
           no_output_timeout: 10m
       - run:
-          name: Build Mac app
-          command: npx electron-builder --mac
+          name: Build Mac app (DMG)
+          command: npx electron-builder --mac dmg
       - store_artifacts:
           path: dist
           destination: mac-build
+      - run:
+          name: Publish DMG to GitHub Release
+          command: |
+            VERSION=$(node -p "require('./package.json').version")
+            TAG="v${VERSION}"
+            DMG_FILE=$(ls dist/*.dmg 2>/dev/null | head -1)
+            if [ -n "$DMG_FILE" ]; then
+              echo "Publishing $DMG_FILE as $TAG"
+              gh release create "$TAG" "$DMG_FILE" --repo Blazehunterx/founderflow-app --title "FounderFlow $TAG" --notes "Mac DMG installer" || echo "Release may already exist, uploading asset..."
+              gh release upload "$TAG" "$DMG_FILE" --repo Blazehunterx/founderflow-app --clobber || echo "Upload failed"
+            fi
+          env:
+            GITHUB_TOKEN: ${GITHUB_TOKEN}
 
 workflows:
   build:
