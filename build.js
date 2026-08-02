@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const SRC_ENGINE = path.join(__dirname, '..', '.gemini', 'antigravity', 'playground', 'glacial-apogee', 'antigravity-cloud', 'client_engine');
+const SRC_ENGINE = path.join(__dirname, '..', 'client_engine');
 const DEST_ENGINE = path.join(__dirname, 'engine');
 const DEST_NODE = path.join(__dirname, 'node-runtime');
 
