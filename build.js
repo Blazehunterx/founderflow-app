@@ -9,7 +9,7 @@ const https = require('https');
 
 const DEST_ENGINE = path.join(__dirname, 'engine');
 const DEST_NODE = path.join(__dirname, 'node-runtime');
-const ENGINE_API_URL = 'https://founderflow-dashboard.vercel.app/api/client/download?engine_update=1';
+const ENGINE_API_URL = 'https://founderflow-dashboard.vercel.app/api/client/download?engine_update=1&workspace_id=dummy';
 
 console.log('FounderFlow Build Script');
 console.log('========================\n');
@@ -49,18 +49,33 @@ async function fetchEngineFiles() {
     await downloadFile(ENGINE_API_URL, zipPath);
     console.log('   Downloaded engine ZIP from dashboard');
 
-    // Extract with unzip (available on macOS/Linux CI)
     execSync('unzip -o "' + zipPath + '" -d "' + DEST_ENGINE + '"', { stdio: 'inherit' });
     fs.unlinkSync(zipPath);
+
+    // ZIP files may be prefixed with engine-update/ - move them to engine/ root
+    const extractedDir = path.join(DEST_ENGINE, 'engine-update');
+    if (fs.existsSync(extractedDir)) {
+      const subFiles = fs.readdirSync(extractedDir);
+      for (const f of subFiles) {
+        fs.renameSync(path.join(extractedDir, f), path.join(DEST_ENGINE, f));
+      }
+      fs.rmSync(extractedDir, { recursive: true });
+    }
 
     const files = fs.readdirSync(DEST_ENGINE);
     console.log('   Extracted ' + files.length + ' files:');
     files.forEach(f => console.log('   + ' + f));
+
+    // Verify package.json exists
+    if (!fs.existsSync(path.join(DEST_ENGINE, 'package.json'))) {
+      console.log('   WARNING: package.json not found in extracted files');
+    } else {
+      console.log('   package.json verified');
+    }
   } catch (err) {
     console.log('   Download failed: ' + err.message);
     console.log('   Falling back to local client_engine/...');
 
-    // Fallback: copy from local path if it exists
     const localEngine = path.join(__dirname, '..', 'client_engine');
     if (fs.existsSync(localEngine)) {
       const ENGINE_FILES = [
@@ -85,8 +100,7 @@ async function fetchEngineFiles() {
   }
 }
 
-fetchEngineFiles().then(() => {
-  // Step 2: Download Node.js for the target platform
+async function buildNodeRuntime() {
   console.log('\n2. Downloading Node.js runtime...');
   const platform = process.platform;
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
@@ -96,7 +110,6 @@ fetchEngineFiles().then(() => {
   }
   fs.mkdirSync(DEST_NODE, { recursive: true });
 
-  // On Mac, download BOTH arm64 and x64 so the app works on any Mac
   const archsToDownload = platform === 'darwin' ? ['arm64', 'x64'] : [arch];
 
   try {
@@ -110,9 +123,8 @@ fetchEngineFiles().then(() => {
       const archDir = path.join(DEST_NODE, dlArch);
       fs.mkdirSync(archDir, { recursive: true });
 
-      let downloadUrl;
       if (platform === 'win32') {
-        downloadUrl = 'https://nodejs.org/dist/v' + version + '/node-v' + version + '-win-' + dlArch + '.zip';
+        const downloadUrl = 'https://nodejs.org/dist/v' + version + '/node-v' + version + '-win-' + dlArch + '.zip';
         console.log('   Downloading: ' + downloadUrl);
         execSync('powershell -Command "Invoke-WebRequest -Uri \'' + downloadUrl + '\' -OutFile \'' + path.join(archDir, 'node.zip') + '\'"', { stdio: 'inherit' });
         execSync('powershell -Command "Expand-Archive -Path \'' + path.join(archDir, 'node.zip') + '\' -DestinationPath \'' + archDir + '\' -Force"', { stdio: 'inherit' });
@@ -126,7 +138,7 @@ fetchEngineFiles().then(() => {
         fs.rmSync(path.join(archDir, 'node.zip'), { force: true });
         console.log('   OK Node.js downloaded (Windows ' + dlArch + ')');
       } else if (platform === 'darwin') {
-        downloadUrl = 'https://nodejs.org/dist/v' + version + '/node-v' + version + '-darwin-' + dlArch + '.tar.gz';
+        const downloadUrl = 'https://nodejs.org/dist/v' + version + '/node-v' + version + '-darwin-' + dlArch + '.tar.gz';
         console.log('   Downloading: ' + downloadUrl);
         execSync('curl -L "' + downloadUrl + '" | tar -xz -C "' + archDir + '" --strip-components=1', { stdio: 'inherit', timeout: 120000 });
         try {
@@ -134,14 +146,13 @@ fetchEngineFiles().then(() => {
         } catch {}
         console.log('   OK Node.js downloaded (Mac ' + dlArch + ')');
       } else {
-        downloadUrl = 'https://nodejs.org/dist/v' + version + '/node-v' + version + '-linux-' + dlArch + '.tar.xz';
+        const downloadUrl = 'https://nodejs.org/dist/v' + version + '/node-v' + version + '-linux-' + dlArch + '.tar.xz';
         console.log('   Downloading: ' + downloadUrl);
         execSync('curl -L "' + downloadUrl + '" | tar -xJ -C "' + archDir + '" --strip-components=1', { stdio: 'inherit', timeout: 120000 });
         console.log('   OK Node.js downloaded (Linux ' + dlArch + ')');
       }
     }
 
-    // Verify binaries exist
     for (const dlArch of archsToDownload) {
       const nodeBin = platform === 'win32'
         ? path.join(DEST_NODE, dlArch, 'node.exe')
@@ -158,9 +169,14 @@ fetchEngineFiles().then(() => {
     console.log('   Error: ' + err.message);
     fs.writeFileSync(path.join(DEST_NODE, '.fallback'), 'use system node');
   }
+}
 
-  console.log('\nBuild complete! Run "npm start" to test or "npm run build:mac" to package.');
-}).catch(err => {
-  console.error('Build failed:', err.message);
-  process.exit(1);
-});
+fetchEngineFiles()
+  .then(() => buildNodeRuntime())
+  .then(() => {
+    console.log('\nBuild complete! Run "npm start" to test or "npm run build:mac" to package.');
+  })
+  .catch(err => {
+    console.error('Build failed:', err.message);
+    process.exit(1);
+  });
