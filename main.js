@@ -23,29 +23,26 @@ function syncEngineFiles() {
   if (!fs.existsSync(ENGINE_SOURCE)) return;
   if (!fs.existsSync(ENGINE_DIR)) fs.mkdirSync(ENGINE_DIR, { recursive: true });
 
-  const files = fs.readdirSync(ENGINE_SOURCE);
-  for (const file of files) {
-    const src = path.join(ENGINE_SOURCE, file);
-    const dest = path.join(ENGINE_DIR, file);
-    const stat = fs.statSync(src);
-    if (stat.isDirectory()) {
-      if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
-      // Recurse into subdirectories (but skip node_modules, sessions)
-      if (['node_modules', 'sessions', 'sessions2', 'founderflow_sessions'].includes(file)) continue;
-      const subFiles = fs.readdirSync(src);
-      for (const sub of subFiles) {
-        const subSrc = path.join(src, sub);
-        const subDest = path.join(dest, sub);
-        if (!fs.existsSync(subDest)) {
-          fs.copyFileSync(subSrc, subDest);
-        }
+  const SKIP_DIRS = ['node_modules', 'sessions', 'sessions2', 'founderflow_sessions'];
+
+  function copyDir(srcDir, destDir) {
+    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+    const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const src = path.join(srcDir, entry.name);
+      const dest = path.join(destDir, entry.name);
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.includes(entry.name)) continue;
+        copyDir(src, dest);
+      } else {
+        // Preserve user-editable config.json
+        if (entry.name === 'config.json' && fs.existsSync(dest)) continue;
+        fs.copyFileSync(src, dest);
       }
-    } else {
-      // Overwrite config.json only if it doesn't exist (preserve user edits)
-      if (file === 'config.json' && fs.existsSync(dest)) continue;
-      if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
     }
   }
+
+  copyDir(ENGINE_SOURCE, ENGINE_DIR);
 }
 
 // Bundled Node.js path (inside app resources)
@@ -685,6 +682,22 @@ function installDependencies() {
       });
 
       mainWindow?.webContents.send('deps:log', result || 'npm install complete\n');
+
+      // Install Playwright Chromium browser
+      mainWindow?.webContents.send('deps:log', 'Installing Playwright Chromium browser...\n');
+      try {
+        const pwResult = execSync('npx playwright install chromium', {
+          cwd: ENGINE_DIR,
+          env: { ...process.env },
+          encoding: 'utf8',
+          maxBuffer: 1024 * 1024,
+          timeout: 300000,
+        });
+        mainWindow?.webContents.send('deps:log', pwResult || 'Playwright Chromium installed\n');
+      } catch (pwErr) {
+        mainWindow?.webContents.send('deps:log', 'Playwright browser install failed (will try system Chrome): ' + (pwErr.stdout || pwErr.message) + '\n');
+      }
+
       resolve({ success: true });
     } catch (err) {
       const msg = err.stdout || err.stderr || err.message;

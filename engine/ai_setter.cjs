@@ -1950,6 +1950,19 @@ async function checkAndReply(page, supabase, config, context) {
           return;
         }
 
+        // Check for manual override (!) — if any of our last 5 sent messages ends with "!", stop.
+        const primaryOurMsgs = messages.filter(m => m.isMe && m.text).slice(-5).map(m => m.text.trim());
+        if (primaryOurMsgs.some(t => t.endsWith('!'))) {
+          log('info', 'PRIMARY_SEND', `@${thread.username}: manual override detected (!) — skipping`);
+          if (lead) {
+            try { await supabase.from('leads').update({ conversation_step: TERMINAL_STEP, followup_step: 99, last_updated_at: new Date().toISOString() }).eq('id', lead.id); } catch (e) {}
+          }
+          repliedThreads.add(thread.threadId);
+          markThreadProcessed(thread.threadId);
+          persistProcessedThreads();
+          return;
+        }
+
         // Filter out "Seen" receipts and system notifications — not real messages
         if (lastMsg && /^seen\s/i.test(lastMsg.text || '')) {
           log('info', 'PRIMARY_SEND', `@${thread.username}: last message is "Seen" receipt — skipping`);
@@ -2505,6 +2518,18 @@ async function checkAndReply(page, supabase, config, context) {
           persistProcessedThreads();
           return;
         }
+        // Check for manual override (!) — if any of our last 5 sent messages ends with "!", stop.
+        const requestOurMsgs = messages.filter(m => m.isMe && m.text).slice(-5).map(m => m.text.trim());
+        if (requestOurMsgs.some(t => t.endsWith('!'))) {
+          log('info', 'REQUEST_SEND', `@${thread.username}: manual override detected (!) — skipping`);
+          if (lead) {
+            try { await supabase.from('leads').update({ conversation_step: TERMINAL_STEP, followup_step: 99, last_updated_at: new Date().toISOString() }).eq('id', lead.id); } catch (e) {}
+          }
+          repliedThreads.add(thread.threadId);
+          markThreadProcessed(thread.threadId);
+          persistProcessedThreads();
+          return;
+        }
         const theirMsgs = messages.filter(m => !m.isMe && m.text).map(m => m.text);
         const myMsgs = messages.filter(m => m.isMe && m.text).map(m => m.text);
         const incoming = theirMsgs[theirMsgs.length - 1] || thread.lastMessage || '';
@@ -2689,6 +2714,18 @@ async function checkAndReply(page, supabase, config, context) {
         const lastMsg = messages[messages.length - 1];
         if (lastMsg && lastMsg.isMe) {
           log('info', 'HIDDEN_SEND', `@${thread.username}: last message is from us — skipping`);
+          repliedThreads.add(thread.threadId);
+          markThreadProcessed(thread.threadId);
+          persistProcessedThreads();
+          return;
+        }
+        // Check for manual override (!) — if any of our last 5 sent messages ends with "!", stop.
+        const hiddenOurMsgs = messages.filter(m => m.isMe && m.text).slice(-5).map(m => m.text.trim());
+        if (hiddenOurMsgs.some(t => t.endsWith('!'))) {
+          log('info', 'HIDDEN_SEND', `@${thread.username}: manual override detected (!) — skipping`);
+          if (lead) {
+            try { await supabase.from('leads').update({ conversation_step: TERMINAL_STEP, followup_step: 99, last_updated_at: new Date().toISOString() }).eq('id', lead.id); } catch (e) {}
+          }
           repliedThreads.add(thread.threadId);
           markThreadProcessed(thread.threadId);
           persistProcessedThreads();
@@ -3284,9 +3321,9 @@ async function checkAndReply(page, supabase, config, context) {
       continue;
     }
 
-    // Check for manual override (!) — if ANY of our sent messages ends with "!", AI stops replying.
-    // This must run regardless of who sent the last message, so it catches Jani jumping in mid-thread.
-    const ourMessages = messages.filter(m => m.isMe && m.text).map(m => m.text.trim());
+    // Check for manual override (!) — if any of our last 5 sent messages ends with "!", AI stops replying.
+    // Only check recent messages so a "!" from 20 messages ago doesn't block a natural conversation.
+    const ourMessages = messages.filter(m => m.isMe && m.text).slice(-5).map(m => m.text.trim());
     const hasManualOverride = ourMessages.some(t => t.endsWith('!'));
     if (hasManualOverride && lead) {
       try { await supabase.from('leads').update({
@@ -3303,29 +3340,15 @@ async function checkAndReply(page, supabase, config, context) {
     }
 
     if (lastMsg.isMe) {
-      // Debug: show why isMe is true
-      const debugLastText = (lastMsg.text || '').substring(0, 40);
-      const debugLastSenderId = thread.lastSenderId;
-      const debugViewerId = thread.viewerId;
-      log('debug', 'SKIP_ISME', `@${thread.username} lastSenderId:${debugLastSenderId} viewerId:${debugViewerId} lastText:"${debugLastText}"`);
-      // Instagram's API item.user_id is unreliable — it often attributes the other person's
-      // last message to us (viewer_id), causing false isMe.
-      // - If thread is READ → skip (other person saw our reply, isMe is likely correct)
-      // - If thread is UNREAD → process (isMe is a false positive — they replied after our DM)
-      const isUnread = thread.isUnread !== false; // undefined/true = unread, false = read
-      const shouldSkip = !isUnread;
-
-      if (!shouldSkip) {
-        // Unread thread — isMe is a false positive from unreliable API, treat as reply
-        log('info', 'AI', `@${thread.username}: isMe=true but unread — treating as reply (API user_id unreliable)`);
-      } else {
-        repliedThreads.add(thread.threadId);
-        markThreadProcessed(thread.threadId);
+      // Last message is from us — never reply on top of our own message.
+      // Previous logic assumed unread + isMe = API false positive, but this caused
+      // the AI to double-reply when we sent the last DM and the lead hasn't opened it yet.
+      repliedThreads.add(thread.threadId);
+      markThreadProcessed(thread.threadId);
           persistProcessedThreads();
-        detail.action = 'skipped_last_from_me';
-        log('info', 'AI', `@${thread.username}: last msg is from us — skipping (alreadyReplied:${!!alreadyReplied} isUnread:${isUnread})`);
-        continue;
-      }
+      detail.action = 'skipped_last_from_me';
+      log('info', 'AI', `@${thread.username}: last msg is from us — skipping`);
+      continue;
     }
 
     // --- STORY REACTIONS / STICKERS / MEDIA: skip (no auto-reply) ---

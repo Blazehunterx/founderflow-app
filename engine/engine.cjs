@@ -1961,7 +1961,21 @@ async function main() {
               log('warn', 'FOLLOWUP_SKIP', `@${lead.ig_handle} has new message — skipping follow-up, AI Setter will handle next pulse`);
               continue;
             }
-          } catch (e) { /* DOM check failed, proceed with follow-up anyway */ }
+          } catch (e) { /* DOM check failed — try simpler fallback */
+            try {
+              const simpleCheck = await page.evaluate(() => {
+                const rows = document.querySelectorAll('div[role="log"] div[role="row"]');
+                if (rows.length === 0) return 'unknown';
+                const last = rows[rows.length - 1];
+                const sentIndicators = last.querySelector('[data-testid*="sent"], [aria-label*="Sent"], [aria-label*="sent"], [style*="flex-end"]');
+                return sentIndicators ? 'us' : 'them';
+              });
+              if (simpleCheck === 'us') {
+                log('warn', 'FOLLOWUP_SKIP', `@${lead.ig_handle} fallback check: last msg is from us — skipping follow-up`);
+                continue;
+              }
+            } catch (e2) { /* both checks failed, proceed with follow-up */ }
+          }
 
           log('info', 'FOLLOWUP', `@${lead.ig_handle} step ${step + 1}/${maxFU}`);
           

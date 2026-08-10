@@ -6,9 +6,14 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const SRC_ENGINE = path.join(__dirname, '..', '.gemini', 'antigravity', 'playground', 'glacial-apogee', 'antigravity-cloud', 'client_engine');
+// Detect source: prefer antigravity-cloud sibling repo, fall back to local engine/
+const SIBLING_ENGINE = path.join(__dirname, '..', '.gemini', 'antigravity', 'playground', 'glacial-apogee', 'antigravity-cloud', 'client_engine');
+const LOCAL_ENGINE = path.join(__dirname, 'engine');
+const SRC_ENGINE = (fs.existsSync(SIBLING_ENGINE) && fs.existsSync(path.join(SIBLING_ENGINE, 'engine.cjs')))
+  ? SIBLING_ENGINE : LOCAL_ENGINE;
 const DEST_ENGINE = path.join(__dirname, 'engine');
 const DEST_NODE = path.join(__dirname, 'node-runtime');
+const COPY_FROM_SOURCE = SRC_ENGINE !== DEST_ENGINE; // Only copy if source is different from dest
 
 const ENGINE_FILES = [
   'engine.cjs', 'ai_setter.cjs', 'harvester.cjs', 'sender.cjs',
@@ -16,24 +21,64 @@ const ENGINE_FILES = [
   'inject_cookies.cjs', 'ghost.cjs', 'package.json',
 ];
 
+const HYBRID_FILES = [
+  'funnel_config.cjs', 'rules_engine.cjs', 'llm_responder.cjs',
+  'handler.cjs', 'validator.cjs',
+];
+
+const HYBRID_JANI_FILES = [
+  'funnel_config_jani.cjs', 'rules_engine_jani.cjs', 'llm_responder_jani.cjs',
+  'handler_jani.cjs', 'validator_jani.cjs',
+];
+
 console.log('FounderFlow Build Script');
 console.log('========================\n');
+console.log(`Source: ${COPY_FROM_SOURCE ? SRC_ENGINE : '(local engine/ — already in repo)'}`);
 
-// Step 1: Copy engine files
-console.log('1. Copying engine files...');
-if (fs.existsSync(DEST_ENGINE)) {
-  fs.rmSync(DEST_ENGINE, { recursive: true });
-}
-fs.mkdirSync(DEST_ENGINE, { recursive: true });
+// Step 1: Copy engine files (only if source differs from dest)
+if (COPY_FROM_SOURCE) {
+  console.log('\n1. Copying engine files from antigravity-cloud...');
+  if (fs.existsSync(DEST_ENGINE)) {
+    fs.rmSync(DEST_ENGINE, { recursive: true });
+  }
+  fs.mkdirSync(DEST_ENGINE, { recursive: true });
 
-for (const file of ENGINE_FILES) {
-  const src = path.join(SRC_ENGINE, file);
-  const dest = path.join(DEST_ENGINE, file);
-  if (fs.existsSync(src)) {
-    fs.copyFileSync(src, dest);
-    console.log(`   ✓ ${file}`);
+  for (const file of ENGINE_FILES) {
+    const src = path.join(SRC_ENGINE, file);
+    const dest = path.join(DEST_ENGINE, file);
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, dest);
+      console.log(`   ✓ ${file}`);
+    } else {
+      console.log(`   ✗ ${file} (not found, skipping)`);
+    }
+  }
+
+  // Step 1b: Copy hybrid funnel files
+  console.log('\n1b. Copying hybrid funnel files...');
+  const hybridDir = path.join(DEST_ENGINE, 'hybrid');
+  fs.mkdirSync(hybridDir, { recursive: true });
+
+  for (const file of [...HYBRID_FILES, ...HYBRID_JANI_FILES]) {
+    const src = path.join(SRC_ENGINE, 'hybrid', file);
+    const dest = path.join(hybridDir, file);
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, dest);
+      console.log(`   ✓ hybrid/${file}`);
+    } else {
+      console.log(`   ✗ hybrid/${file} (not found, skipping)`);
+    }
+  }
+} else {
+  console.log('\n1. Using local engine/ directory (already in repo)');
+  // Ensure hybrid/ directory exists in local engine
+  const localHybrid = path.join(DEST_ENGINE, 'hybrid');
+  if (!fs.existsSync(localHybrid)) {
+    console.log('   WARNING: hybrid/ directory missing in local engine/');
+    console.log('   Run this locally first: node build.js (from antigravity-cloud sibling)');
   } else {
-    console.log(`   ✗ ${file} (not found, skipping)`);
+    const hybridFiles = fs.readdirSync(localHybrid);
+    console.log(`   hybrid/ contains ${hybridFiles.length} files: ${hybridFiles.join(', ')}`);
   }
 }
 
