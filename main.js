@@ -661,8 +661,22 @@ function installDependencies() {
     try {
       const engineExists = fs.existsSync(path.join(ENGINE_DIR, 'package.json'));
       if (!engineExists) {
-        reject(new Error('No package.json in engine directory'));
-        return;
+        // Fallback: create minimal package.json so npm install can proceed
+        const fallbackPkg = JSON.stringify({
+          name: 'founderflow-engine',
+          version: '3.0.0',
+          description: 'FounderFlow Instagram Outreach Engine',
+          main: 'engine.cjs',
+          engines: { node: '>=18' },
+          dependencies: {
+            'playwright': '1.40.0',
+            '@supabase/supabase-js': '^2.39.0',
+            'adm-zip': '^0.5.10',
+            'ws': '^8.16.0'
+          }
+        }, null, 2);
+        fs.writeFileSync(path.join(ENGINE_DIR, 'package.json'), fallbackPkg);
+        mainWindow?.webContents.send('deps:log', 'Created missing package.json (fallback)\\n');
       }
 
       const nodeModulesExists = fs.existsSync(path.join(ENGINE_DIR, 'node_modules'));
