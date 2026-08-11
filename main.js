@@ -37,6 +37,12 @@ function syncEngineFiles() {
       } else {
         // Preserve user-editable config.json
         if (entry.name === 'config.json' && fs.existsSync(dest)) continue;
+        // Only copy if source is newer (don't overwrite downloaded updates with old bundled files)
+        if (fs.existsSync(dest)) {
+          const srcStat = fs.statSync(src);
+          const destStat = fs.statSync(dest);
+          if (srcStat.mtimeMs <= destStat.mtimeMs) continue;
+        }
         fs.copyFileSync(src, dest);
       }
     }
@@ -551,14 +557,6 @@ async function updateEngine() {
     }
 
     // Restore config.json
-    if (configBackup) {
-      fs.writeFileSync(CONFIG_PATH, configBackup);
-    }
-
-    // Re-sync engine files from resources (updates bundled engine files)
-    syncEngineFiles();
-
-    // Restore config again (syncEngineFiles might overwrite)
     if (configBackup) {
       fs.writeFileSync(CONFIG_PATH, configBackup);
     }
