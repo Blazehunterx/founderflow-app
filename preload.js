@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld('api', {
   openEngineDir: () => ipcRenderer.invoke('app:open-engine-dir'),
   quit: () => ipcRenderer.invoke('app:quit'),
 
+  // Lead Review
+  fetchUpcomingLeads: () => ipcRenderer.invoke('app:fetch-upcoming-leads'),
+  excludeLead: (leadId, reason) => ipcRenderer.invoke('app:exclude-lead', leadId, reason),
+
   // Event listeners
   onLog: (cb) => ipcRenderer.on('engine:log', (_, msg) => cb(msg)),
   onError: (cb) => ipcRenderer.on('engine:error', (_, msg) => cb(msg)),

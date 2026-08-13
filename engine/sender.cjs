@@ -12,6 +12,12 @@ function jitter(baseMs, variance = 0.3) {
   return baseMs + (Math.random() * jitterAmount * 2) - jitterAmount;
 }
 
+function log(level, tag, msg) {
+  const ts = new Date().toISOString();
+  const prefix = { error: '❌', warn: '⚠️', info: '🔵', success: '✅' }[level] || '';
+  console.log(`[${ts}] ${prefix} [${tag}] ${msg}`);
+}
+
 function delay(ms) {
   return new Promise(r => setTimeout(r, jitter(ms)));
 }
@@ -91,20 +97,25 @@ async function purgePopups(page) {
 async function typeAndSend(page, text) {
   const boxSelector = '[role="main"] div[contenteditable="true"], div[contenteditable="true"], [placeholder*="Message"], div[role="textbox"], textarea[placeholder*="Message"], p[role="textbox"]';
   const box = page.locator(boxSelector).first();
-  
-  // Try normal click first, force only as fallback
+
+  // Use page.evaluate to click — bypasses overlay interception
+  await page.evaluate(() => {
+    const el = document.querySelector('div[contenteditable="true"], div[role="textbox"]');
+    if (el) { el.focus(); el.click(); }
+  }).catch(() => {});
+
+  // Also try normal click as backup
   try {
     if (await box.count() > 0) {
       await box.scrollIntoViewIfNeeded();
-      try { await box.click({ timeout: 10000 }); } catch (_) {
-        await box.click({ force: true, timeout: 5000 });
+      try { await box.click({ timeout: 3000 }); } catch (_) {
+        await box.click({ force: true, timeout: 3000 });
       }
     }
   } catch (e) {}
 
-  if (!(await box.isVisible({ timeout: 10000 }).catch(() => false))) return false;
+  if (!(await box.isVisible({ timeout: 5000 }).catch(() => false))) return false;
 
-  await box.click();
   await delay(800 + Math.floor(Math.random() * 700));
 
   const bubbles = splitMessage(text);
@@ -112,11 +123,40 @@ async function typeAndSend(page, text) {
     const chunk = bubbles[i].trim();
     const safeChunk = chunk.length > 900 ? chunk.substring(0, 900) : chunk;
 
-    await box.click();
+    // Focus via JS first (bypasses overlay), then type with Playwright for human-like keypresses
+    await page.evaluate(() => {
+      const el = document.querySelector('div[contenteditable="true"], div[role="textbox"]');
+      if (el) { el.focus(); el.click(); }
+    }).catch(() => {});
     await delay(400 + Math.floor(Math.random() * 400));
+
+    // CLEAR input box before typing — prevents duplicate text from previous attempts
+    try {
+      await box.fill('');
+    } catch (e) {
+      // Fallback clear for contenteditable
+      await page.evaluate(() => {
+        const el = document.querySelector('div[contenteditable="true"], div[role="textbox"]');
+        if (el) {
+          el.focus();
+          el.innerHTML = '';
+          el.textContent = '';
+        }
+      });
+    }
+    await delay(200 + Math.floor(Math.random() * 200));
+
     try {
       await box.type(safeChunk, { delay: 30 + Math.floor(Math.random() * 50) });
-    } catch (e) {}
+    } catch (e) {
+      // Fallback: clipboard paste if type fails
+      await page.evaluate((text) => {
+        const el = document.querySelector('div[contenteditable="true"], div[role="textbox"]');
+        if (!el) return;
+        el.focus();
+        document.execCommand('insertText', false, text);
+      }, safeChunk);
+    }
     await delay(800 + Math.floor(Math.random() * 700));
 
     // Attempt to send: try all known send button selectors, then scan DOM for send icon
@@ -176,8 +216,9 @@ async function typeAndSend(page, text) {
       if (blocked) return { success: false, error: 'Action Blocked' };
     } catch (_) {}
 
-    // Verify message actually appeared in chat (broad fallback)
+    // Verify message actually appeared in chat
     try {
+      await delay(2000); // Wait for message to render in DOM
       const verified = await page.evaluate(function (sentText) {
         var checkText = sentText.trim().substring(0, 80);
         // Strategy 1: check dir-based elements (profile overlay bubbles)
@@ -187,10 +228,24 @@ async function typeAndSend(page, text) {
         }
         // Strategy 2: check full page text (works on dedicated thread page)
         if (document.body.innerText.indexOf(checkText) !== -1) return true;
+        // Strategy 3: check for "Couldn't send" or error indicators
+        if (document.body.innerText.indexOf("Couldn't send") !== -1) return 'blocked';
+        if (document.body.innerText.indexOf("Try Again") !== -1) return 'blocked';
         return false;
-      }, safeChunk).catch(function () { return true; });
-      if (!verified) log('warn', 'VERIFY', 'Message not found in DOM — may still have sent');
-    } catch (e) {}
+      }, safeChunk);
+      if (verified === 'blocked') {
+        log('error', 'VERIFY', 'Instagram blocked the message — Couldn\'t send detected');
+        return { success: false, error: 'Message blocked by Instagram' };
+      }
+      if (!verified) {
+        log('error', 'VERIFY', 'Message NOT found in DOM after send — treating as FAILED');
+        return { success: false, error: 'Message not verified in DOM' };
+      }
+      log('info', 'VERIFY', 'Message confirmed in DOM');
+    } catch (e) {
+      log('error', 'VERIFY', `Verification check failed: ${e.message} — treating as FAILED`);
+      return { success: false, error: `Verification failed: ${e.message}` };
+    }
     
     if (i < bubbles.length - 1) await delay(jitter(2000, 0.5));
   }
@@ -200,55 +255,66 @@ async function typeAndSend(page, text) {
 
 async function sendReplyViaPage(page, handle, text) {
   try {
-    await page.goto(`https://www.instagram.com/${handle}/`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // PRIMARY: Navigate to compose screen directly (bypasses fragile button detection)
+    await page.goto(`https://www.instagram.com/direct/new/?username=${handle}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await delay(3000);
+    await purgePopups(page);
+    await delay(1000);
 
-    // Click Message button via native JS event dispatch
-    const msgClicked = await page.evaluate(() => {
-      const MSG_KEYWORDS = ['message', 'send message', 'send a message', 'message request'];
-      const matchesMessageButton = (el) => {
-        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        if (MSG_KEYWORDS.some(k => aria.includes(k))) return true;
-        const vis = (el.innerText || el.textContent || '').trim().toLowerCase();
-        if (MSG_KEYWORDS.some(k => vis.includes(k))) return true;
-        return false;
-      };
-      // NOTE: SVGs excluded — nav "Messages" icon (aria-label="Messages") matches includes('message')
-      const all = document.querySelectorAll('div[role="button"], button, span, a[href*="/direct/"]');
-      for (const el of all) {
-        if (matchesMessageButton(el)) {
-          el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'touch' }));
-          el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
-          el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'touch' }));
-          el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
-          el.click();
-          return true;
+    const hasComposeInput = await page.locator('input[name="queryBox"], input[placeholder*="Search"], input[aria-label*="To"], input[aria-label*="Search"]').first().isVisible({ timeout: 5000 }).catch(() => false);
+    if (hasComposeInput) {
+      log('info', 'PROFILE_SEND', `Compose screen loaded for @${handle}`);
+    } else {
+      // FALLBACK: Try profile page Message button
+      log('info', 'PROFILE_SEND', `Compose failed — trying profile page for @${handle}`);
+      await page.goto(`https://www.instagram.com/${handle}/`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await delay(3000);
+
+      const msgClicked = await page.evaluate(() => {
+        const MSG_KEYWORDS = ['message', 'send message', 'send a message', 'message request'];
+        const matchesMessageButton = (el) => {
+          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+          if (MSG_KEYWORDS.some(k => aria.includes(k))) return true;
+          const vis = (el.innerText || el.textContent || '').trim().toLowerCase();
+          if (MSG_KEYWORDS.some(k => vis.includes(k))) return true;
+          return false;
+        };
+        const all = document.querySelectorAll('div[role="button"], button, span, a[href*="/direct/"]');
+        for (const el of all) {
+          if (matchesMessageButton(el)) {
+            el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'touch' }));
+            el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
+            el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'touch' }));
+            el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
+            el.click();
+            return true;
+          }
         }
-      }
-      return false;
-    }).catch(() => false);
+        return false;
+      }).catch(() => false);
 
-    if (!msgClicked) return { success: false, error: 'Message button not found' };
+      if (!msgClicked) return { success: false, error: 'Message button not found' };
 
-    await delay(3000);
+      await delay(3000);
 
-    // REQUEST THREAD ACCEPT: if this is a request thread, click "Accept" before looking for message input
-    try {
-      const acceptBtn = page.locator('button:has-text("Accept"), button:has-text("Accept request"), div[role="button"]:has-text("Accept")').first();
-      if (await acceptBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-        log('info', 'REQUEST_ACCEPT', `Request thread — clicking Accept for @${handle}`);
-        await acceptBtn.click({ timeout: 5000 });
-        await delay(3000); // Wait for accept to process and message input to appear
-      }
-    } catch (e) {}
+      // REQUEST THREAD ACCEPT
+      try {
+        const acceptBtn = page.locator('button:has-text("Accept"), button:has-text("Accept request"), div[role="button"]:has-text("Accept")').first();
+        if (await acceptBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+          log('info', 'REQUEST_ACCEPT', `Request thread — clicking Accept for @${handle}`);
+          await acceptBtn.click({ timeout: 5000 });
+          await delay(3000);
+        }
+      } catch (e) {}
 
-    // Wait for chat box
-    try {
-      await Promise.race([
-        page.waitForSelector('div[contenteditable="true"], [placeholder*="Message"]', { timeout: 15000 }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('hard_timeout')), 15000))
-      ]);
-    } catch (_) {}
+      // Wait for chat box
+      try {
+        await Promise.race([
+          page.waitForSelector('div[contenteditable="true"], [placeholder*="Message"]', { timeout: 15000 }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('hard_timeout')), 15000))
+        ]);
+      } catch (_) {}
+    }
 
     // Dismiss popups after chat box appeared
     await purgePopups(page);

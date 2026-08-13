@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>FounderFlow Engine</title>
+<HTA:APPLICATION ID="app" APPLICATIONNAME="FounderFlow Engine" WINDOWSTATE="normal" BORDER="thin" CAPTION="yes" SHOWINTASKBAR="yes" SINGLEINSTANCE="yes" />
+<style>
+body { margin: 0; padding: 0; font-family: 'Segoe UI', Arial, sans-serif; background: #0a0a14; color: #e2e8f0; }
+.container { max-width: 500px; margin: 40px auto; padding: 0 24px; }
+h1 { font-size: 22px; color: #a5f3fc; margin: 0 0 4px 0; font-weight: 700; }
+.sub { color: #64748b; font-size: 13px; margin: 0 0 28px 0; }
+.step { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 10px; margin-bottom: 6px; background: #14142a; border: 1px solid transparent; }
+.step.done { background: #0a2e1a; border-color: #1a4a2a; }
+.step.active { background: #1a1a3e; border-color: #7c3aed; }
+.step.fail { background: #2e0a0a; border-color: #4a1a1a; }
+.step .num { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; background: #2a2a4a; color: #94a3b8; flex-shrink: 0; }
+.step.done .num { background: #22c55e; color: white; }
+.step.active .num { background: #7c3aed; color: white; }
+.step.fail .num { background: #ef4444; color: white; }
+.step .label { flex: 1; font-size: 13px; }
+.step .status { font-size: 11px; color: #64748b; }
+.step.done .status { color: #22c55e; }
+.step.fail .status { color: #ef4444; }
+.done-screen { display: none; text-align: center; padding: 40px 0; }
+.done-screen h2 { color: #22c55e; font-size: 20px; margin: 0 0 8px 0; }
+.done-screen p { color: #94a3b8; font-size: 13px; margin: 0 0 4px 0; }
+.done-screen .btn { display: inline-block; margin-top: 20px; padding: 10px 36px; background: #7c3aed; color: white; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+.error-screen { display: none; text-align: center; padding: 40px 0; }
+.error-screen h2 { color: #ef4444; font-size: 20px; }
+</style>
+<script language="JavaScript">
+var steps = ['nodejs', 'deps', 'browser', 'login', 'start', 'autostart'];
+var shell, fso, dir;
+
+function $(id) { return document.getElementById(id); }
+
+function byClass(el, cls) {
+  return el.getElementsByClassName(cls)[0];
+}
+
+function setStep(id, state) {
+  var el = $(id);
+  if (!el) return;
+  el.className = 'step ' + state;
+  if (state === 'done') { byClass(el, 'num').innerText = '\u2713'; byClass(el, 'status').innerText = 'Done'; }
+  else if (state === 'active') { byClass(el, 'status').innerText = 'Running...'; }
+  else if (state === 'fail') { byClass(el, 'status').innerText = 'Failed'; }
+}
+
+function setStatus(id, text) {
+  var el = $(id);
+  if (el) byClass(el, 'status').innerText = text;
+}
+
+function showError(msg) {
+  $('steps').style.display = 'none';
+  $('error-msg').innerText = msg;
+  $('error-screen').style.display = 'block';
+}
+
+function failStep(stepId, msg) {
+  setStep(stepId, 'fail');
+  showError(msg);
+}
+
+function verifyNodePath(path) {
+  try {
+    var oExec = shell.Exec('"' + path + '" -v');
+    var output = oExec.StdOut.ReadAll();
+    if (output && output.trim().indexOf('v') === 0) return true;
+  } catch (e) {}
+  return false;
+}
+
+function getNodePath() {
+  // 1) Try the bundled portable node (full path, verified)
+  var portable = dir + '\\portable-node\\node.exe';
+  if (fso.FileExists(portable) && verifyNodePath(portable)) return portable;
+  // 2) Try system node via PATH (full path from `where`, verified)
+  try {
+    shell.Run('%COMSPEC% /c where node >"' + dir + '\\_nodecheck.txt"', 0, true);
+    if (fso.FileExists(dir + '\\_nodecheck.txt')) {
+      var text = fso.OpenTextFile(dir + '\\_nodecheck.txt').ReadAll().trim();
+      fso.DeleteFile(dir + '\\_nodecheck.txt');
+      // `where` returns full path on its own line
+      var lines = text.split(/\r?\n/);
+      for (var i = 0; i < lines.length; i++) {
+        var p = lines[i].trim();
+        if (p && fso.FileExists(p) && verifyNodePath(p)) return p;
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+function qp(s) { return "'" + s.replace(/'/g, "''") + "'"; }
+
+function downloadNode(callback) {
+  setStep('nodejs', 'active');
+  $('node-status').innerText = 'Downloading Node.js (50 MB)...';
+  try {
+    // Clean up any leftover portable-node from previous failed attempts
+    try {
+      if (fso.FolderExists(dir + '\\portable-node')) {
+        shell.Run('cmd /c rmdir /s /q "' + dir + '\\portable-node"', 0, true);
+      }
+      if (fso.FileExists(dir + '\\node.zip')) {
+        fso.DeleteFile(dir + '\\node.zip');
+      }
+    } catch (cleanupErr) {}
+
+    var ps1Path = dir + '\\_dl_node.ps1';
+    var logPath = dir + '\\_dl_node.log';
+    var psLines = [];
+    psLines.push('[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12');
+    psLines.push('$ErrorActionPreference = "Stop"');
+    psLines.push('$url = "https://nodejs.org/dist/v20.18.3/node-v20.18.3-win-x64.zip"');
+    psLines.push('$zip = "' + dir.replace(/\\/g, '\\\\') + '\\\\node.zip"');
+    psLines.push('$dest = "' + dir.replace(/\\/g, '\\\\') + '\\\\portable-node"');
+    psLines.push('$inner = "$dest\\node-v20.18.3-win-x64"');
+    psLines.push('$log = "' + logPath.replace(/\\/g, '\\\\') + '"');
+    psLines.push('function L($msg) { Add-Content -Path $log -Value $msg }');
+    psLines.push('');
+    psLines.push('L "=== Node.js Download Start ==="');
+    psLines.push('L ("Zip: " + $zip)');
+    psLines.push('L ("Dest: " + $dest)');
+    psLines.push('');
+    psLines.push('# Clean destination');
+    psLines.push('if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }');
+    psLines.push('');
+    psLines.push('# Method 1: Invoke-WebRequest');
+    psLines.push('try {');
+    psLines.push('  $progressPreference = "silentlyContinue"');
+    psLines.push('  Invoke-WebRequest -Uri $url -OutFile $zip');
+    psLines.push('  if (!(Test-Path $zip) -or (Get-Item $zip).Length -eq 0) { throw "empty" }');
+    psLines.push('  L ("Invoke-WebRequest OK, size: " + (Get-Item $zip).Length)');
+    psLines.push('} catch {');
+    psLines.push('  L ("Invoke-WebRequest failed: " + $_)');
+    psLines.push('  # Method 2: WebClient');
+    psLines.push('  try {');
+    psLines.push('    (New-Object System.Net.WebClient).DownloadFile($url, $zip)');
+    psLines.push('    if (!(Test-Path $zip) -or (Get-Item $zip).Length -eq 0) { throw "empty2" }');
+    psLines.push('    L ("WebClient OK, size: " + (Get-Item $zip).Length)');
+    psLines.push('  } catch {');
+    psLines.push('    L ("WebClient failed: " + $_)');
+    psLines.push('    # Method 3: bitsadmin');
+    psLines.push('    bitsadmin /transfer nodeDl /download /priority high $url $zip');
+    psLines.push('    if (!(Test-Path $zip) -or (Get-Item $zip).Length -eq 0) { L "ALL_METHODS_FAILED"; exit 2 }');
+    psLines.push('    L ("bitsadmin OK, size: " + (Get-Item $zip).Length)');
+    psLines.push('  }');
+    psLines.push('}');
+    psLines.push('');
+    psLines.push('L "Extracting..."');
+    psLines.push('try {');
+    psLines.push('  Expand-Archive -Path $zip -DestinationPath $dest -Force');
+    psLines.push('  L "Extract OK"');
+    psLines.push('} catch {');
+    psLines.push('  L ("Extract FAILED: " + $_)');
+    psLines.push('  exit 1');
+    psLines.push('}');
+    psLines.push('Remove-Item $zip -Force');
+    psLines.push('');
+    psLines.push('if (Test-Path $inner) {');
+    psLines.push('  L "Moving inner folder contents..."');
+    psLines.push('  Get-ChildItem $inner | Move-Item -Destination $dest -Force');
+    psLines.push('  Remove-Item $inner -Force -Recurse');
+    psLines.push('}');
+    psLines.push('');
+    psLines.push('# Remove Zone.Identifier ADS (internet download mark) so Windows allows execution');
+    psLines.push('Get-ChildItem $dest -Recurse -File | Unblock-File -ErrorAction SilentlyContinue');
+    psLines.push('L "Unblocked files"');
+    psLines.push('');
+    psLines.push('L ("node.exe exists: " + (Test-Path "$dest\\node.exe"))');
+    psLines.push('if (Test-Path "$dest\\node.exe") {');
+    psLines.push('  L ("node.exe size: " + (Get-Item "$dest\\node.exe").Length)');
+    psLines.push('  exit 0');
+    psLines.push('} else {');
+    psLines.push('  L "node.exe NOT found after extraction"');
+    psLines.push('  L ("Contents of dest: " + (Get-ChildItem $dest -ErrorAction SilentlyContinue | Out-String))');
+    psLines.push('  exit 1');
+    psLines.push('}');
+    var stream = fso.CreateTextFile(ps1Path, true);
+    stream.Write(psLines.join('\r\n'));
+    stream.Close();
+
+    // Clear old log
+    try { if (fso.FileExists(logPath)) fso.DeleteFile(logPath); } catch(e) {}
+
+    var code = shell.Run('powershell -NoProfile -ExecutionPolicy Bypass -File "' + ps1Path + '"', 0, true);
+    try { fso.DeleteFile(ps1Path); } catch(e) {}
+
+    // Read log for diagnostics
+    var logText = '';
+    try {
+      if (fso.FileExists(logPath)) {
+        var logStream = fso.OpenTextFile(logPath);
+        logText = logStream.ReadAll();
+        logStream.Close();
+        fso.DeleteFile(logPath);
+      }
+    } catch(e) {}
+
+    var portableExe = dir + '\\portable-node\\node.exe';
+    if (code === 0 && fso.FileExists(portableExe) && verifyNodePath(portableExe)) {
+      setStep('nodejs', 'done');
+      $('node-status').innerText = 'Node.js + npm ready';
+      callback();
+    } else if (code === 2) {
+      showError('Failed to download Node.js. Your network may be blocking nodejs.org.\n\nTry manually:\n1. Download from https://nodejs.org/dist/v20.18.3/node-v20.18.3-win-x64.zip\n2. Extract into the "portable-node" folder\n3. Run START.hta again');
+    } else if (fso.FileExists(portableExe)) {
+      var detail = logText ? '\n\nDiagnostic log:\n' + logText : '';
+      showError('Node.js downloaded but node.exe failed to run. This is usually caused by antivirus blocking the Node.js binary.\n\n1. Check your antivirus quarantine\n2. Add an exception for the engine folder\n3. Delete the "portable-node" folder and try again' + detail);
+    } else {
+      var detail2 = logText ? '\n\nDiagnostic log:\n' + logText : '';
+      showError('Node.js extraction incomplete. Download from https://nodejs.org manually.' + detail2);
+    }
+  } catch (e) { showError('Node.js setup failed: ' + e.message); }
+}
+
+function createNodeShim() {
+  try {
+    // node.cmd — try portable first, fall back to system node
+    var nodeShim = '@echo off\r\nif exist "%~dp0portable-node\\node.exe" (\r\n  "%~dp0portable-node\\node.exe" %*\r\n) else (\r\n  node %*\r\n)\r\n';
+    var stream = fso.CreateTextFile(dir + '\\node.cmd', true);
+    stream.Write(nodeShim);
+    stream.Close();
+    // npm.cmd — portable npm if available, else system npm
+    var npmCli = dir + '\\portable-node\\node_modules\\npm\\bin\\npm-cli.js';
+    var npmShim = fso.FileExists(npmCli)
+      ? '@echo off\r\nif exist "%~dp0portable-node\\node.exe" (\r\n  "%~dp0portable-node\\node.exe" ' + q(npmCli) + ' %*\r\n) else (\r\n  npm %*\r\n)\r\n'
+      : '@echo off\r\nnpm %*\r\n';
+    var npmStream = fso.CreateTextFile(dir + '\\npm.cmd', true);
+    npmStream.Write(npmShim);
+    npmStream.Close();
+    // npx.cmd — portable npx if available, else system npx
+    var npxCli = dir + '\\portable-node\\node_modules\\npm\\bin\\npx-cli.js';
+    var npxShim = fso.FileExists(npxCli)
+      ? '@echo off\r\nif exist "%~dp0portable-node\\node.exe" (\r\n  "%~dp0portable-node\\node.exe" ' + q(npxCli) + ' %*\r\n) else (\r\n  npx %*\r\n)\r\n'
+      : '@echo off\r\nnpx %*\r\n';
+    var npxStream = fso.CreateTextFile(dir + '\\npx.cmd', true);
+    npxStream.Write(npxShim);
+    npxStream.Close();
+  } catch (e) {
+    $('node-status').innerText = 'Shim creation blocked by antivirus — using direct fallback';
+  }
+}
+
+function setup() {
+  shell = new ActiveXObject('WScript.Shell');
+  fso = new ActiveXObject('Scripting.FileSystemObject');
+  dir = document.location.pathname.replace(/^\//, '').replace(/\//g, '\\');
+  dir = dir.substring(0, dir.lastIndexOf('\\'));
+
+  // Step 0: Check Node.js
+  var nodePath = getNodePath();
+  if (nodePath) {
+    setStep('nodejs', 'done');
+    $('node-status').innerText = 'Found at ' + nodePath;
+    // Only create shims if they don't exist (avoid antivirus blocks on CreateTextFile)
+    if (!fso.FileExists(dir + '\\node.cmd') || !fso.FileExists(dir + '\\npm.cmd')) {
+      createNodeShim();
+    }
+    doSetup();
+  } else {
+    downloadNode(function() {
+      // Shims should already exist in ZIP, but create them if missing
+      if (!fso.FileExists(dir + '\\node.cmd')) {
+        createNodeShim();
+      }
+      doSetup();
+    });
+  }
+}
+
+function q(s) { return '"' + s + '"'; }
+
+function getNodeCmd() {
+  // Always prefer full path — never rely on PATH
+  var portable = dir + '\\portable-node\\node.exe';
+  if (fso.FileExists(portable)) return q(portable);
+  // Fall back to system node found via `where` (full path)
+  try {
+    shell.Run('%COMSPEC% /c where node >"' + dir + '\\_nodecheck.txt"', 0, true);
+    if (fso.FileExists(dir + '\\_nodecheck.txt')) {
+      var text = fso.OpenTextFile(dir + '\\_nodecheck.txt').ReadAll().trim();
+      fso.DeleteFile(dir + '\\_nodecheck.txt');
+      var lines = text.split(/\r?\n/);
+      for (var i = 0; i < lines.length; i++) {
+        var p = lines[i].trim();
+        if (p && fso.FileExists(p)) return q(p);
+      }
+    }
+  } catch (e) {}
+  // Last resort: bare node (only if nothing else works)
+  return 'node';
+}
+
+function getNpmCmd() {
+  // Portable npm via full node path
+  var portable = dir + '\\portable-node\\node.exe';
+  var npmCli = dir + '\\portable-node\\node_modules\\npm\\bin\\npm-cli.js';
+  if (fso.FileExists(portable) && fso.FileExists(npmCli)) return q(portable) + ' ' + q(npmCli);
+  // Shim
+  if (fso.FileExists(dir + '\\npm.cmd')) return q(dir + '\\npm.cmd');
+  // System npm — try to find full path
+  try {
+    shell.Run('%COMSPEC% /c where npm >"' + dir + '\\_npmcheck.txt"', 0, true);
+    if (fso.FileExists(dir + '\\_npmcheck.txt')) {
+      var text = fso.OpenTextFile(dir + '\\_npmcheck.txt').ReadAll().trim();
+      fso.DeleteFile(dir + '\\_npmcheck.txt');
+      var lines = text.split(/\r?\n/);
+      for (var i = 0; i < lines.length; i++) {
+        var p = lines[i].trim();
+        if (p && fso.FileExists(p)) return q(p);
+      }
+    }
+  } catch (e) {}
+  return 'npm';
+}
+
+function getNpxCmd() {
+  // Portable npx via full node path
+  var portable = dir + '\\portable-node\\node.exe';
+  var npxCli = dir + '\\portable-node\\node_modules\\npm\\bin\\npx-cli.js';
+  if (fso.FileExists(portable) && fso.FileExists(npxCli)) return q(portable) + ' ' + q(npxCli);
+  // Shim
+  if (fso.FileExists(dir + '\\npx.cmd')) return q(dir + '\\npx.cmd');
+  // System npx — try to find full path
+  try {
+    shell.Run('%COMSPEC% /c where npx >"' + dir + '\\_npxcheck.txt"', 0, true);
+    if (fso.FileExists(dir + '\\_npxcheck.txt')) {
+      var text = fso.OpenTextFile(dir + '\\_npxcheck.txt').ReadAll().trim();
+      fso.DeleteFile(dir + '\\_npxcheck.txt');
+      var lines = text.split(/\r?\n/);
+      for (var i = 0; i < lines.length; i++) {
+        var p = lines[i].trim();
+        if (p && fso.FileExists(p)) return q(p);
+      }
+    }
+  } catch (e) {}
+  return 'npx';
+}
+
+function depsAlreadyInstalled() {
+  // Check if node_modules exists with all critical deps
+  if (!fso.FolderExists(dir + '\\node_modules')) return false;
+  var criticalDeps = ['playwright', 'playwright-core', '@supabase', 'ws'];
+  for (var i = 0; i < criticalDeps.length; i++) {
+    if (!fso.FolderExists(dir + '\\node_modules\\' + criticalDeps[i])) return false;
+  }
+  return true;
+}
+
+function chromiumAlreadyInstalled() {
+  // Check multiple possible Playwright browser paths
+  var localAppData = shell.ExpandEnvironmentStrings('%LOCALAPPDATA%');
+  var paths = [
+    dir + '\\node_modules\\playwright-core\\.local-browsers',
+    dir + '\\node_modules\\playwright\\.local-browsers',
+    localAppData + '\\ms-playwright'
+  ];
+  for (var i = 0; i < paths.length; i++) {
+    if (fso.FolderExists(paths[i])) {
+      var folder = fso.GetFolder(paths[i]);
+      var en = new Enumerator(folder.SubFolders);
+      for (; !en.atEnd(); en.moveNext()) {
+        var sub = en.item();
+        if (sub.Name.indexOf('chromium') === 0 && sub.Name.indexOf('chromium_headless') === -1) {
+          // Check both chrome-win and chrome-win64 (Playwright version difference)
+          if (fso.FileExists(sub.Path + '\\chrome-win\\chrome.exe')) return true;
+          if (fso.FileExists(sub.Path + '\\chrome-win64\\chrome.exe')) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function doSetup() {
+  // Step 0.5: Cleanup zombie processes
+  try {
+    shell.Run('cmd /c taskkill /F /IM node.exe /T', 0, true);
+    shell.Run('cmd /c taskkill /F /IM chromium.exe /T', 0, true);
+  } catch (e) {}
+
+  // Step 0: Force-Sync latest engine code from cloud
+  tryRepair();
+
+  var nodeCmd = getNodeCmd();
+  var npmCmd = getNpmCmd();
+  var npxCmd = getNpxCmd();
+
+  // Step 1: npm install — skip if deps already present
+  setStep('deps', 'active');
+  if (depsAlreadyInstalled()) {
+    setStep('deps', 'done');
+    setStatus('deps', 'Already installed');
+  } else {
+    try {
+      var c1 = shell.Run('cmd /c cd /d ' + q(dir) + ' && ' + npmCmd + ' install', 1, true);
+      if (c1 !== 0) { failStep('deps', 'npm install failed (code ' + c1 + '). Check your internet.'); return; }
+      // Verify npm actually produced node_modules
+      if (!fso.FolderExists(dir + '\\node_modules')) {
+        failStep('deps', 'npm install completed but node_modules folder missing. Try running again.'); return;
+      }
+      // Verify critical dependencies exist
+      var criticalDeps = ['playwright', '@supabase\\supabase-js', 'ws'];
+      for (var i = 0; i < criticalDeps.length; i++) {
+        if (!fso.FolderExists(dir + '\\node_modules\\' + criticalDeps[i])) {
+          failStep('deps', 'Dependency ' + criticalDeps[i] + ' failed to install. Delete node_modules and try again.'); return;
+        }
+      }
+      setStep('deps', 'done');
+    } catch (e) { failStep('deps', e.message); return; }
+  }
+
+  // Step 2: Playwright browser — skip if chromium already present
+  setStep('browser', 'active');
+  if (chromiumAlreadyInstalled()) {
+    setStep('browser', 'done');
+    setStatus('browser', 'Already installed');
+  } else {
+    try {
+      var c2 = shell.Run('cmd /c cd /d ' + q(dir) + ' && ' + npxCmd + ' playwright install chromium', 1, true);
+      if (c2 !== 0) { failStep('browser', 'Browser install failed (code ' + c2 + ').'); return; }
+      // Verify chromium binary exists
+      if (!chromiumAlreadyInstalled()) {
+        failStep('browser', 'Playwright browser installed but chrome.exe not found. Try running again.'); return;
+      }
+      setStep('browser', 'done');
+    } catch (e) { failStep('browser', e.message); return; }
+  }
+
+  // Step 3: Instagram login (visible browser)
+  setStep('login', 'active');
+  setStatus('login', 'Browser opening for Instagram login — follow the instructions in the new terminal window');
+  try {
+    var c3 = shell.Run('cmd /c cd /d ' + q(dir) + ' && ' + nodeCmd + ' login.cjs', 1, true);
+    if (c3 !== 0) { failStep('login', 'Login process exited with code ' + c3 + '. Check engine.log for details.'); return; }
+    setStep('login', 'done');
+  } catch (e) { failStep('login', e.message); return; }
+
+  if (!fso.FolderExists(dir + '\\sessions\\Default')) {
+    failStep('login', 'Instagram login was not completed. Check engine.log for details, then run START.hta again.');
+    return;
+  }
+
+  // Step 4: Start engine
+  setStep('start', 'active');
+  setStatus('start', 'Launching engine...');
+  try {
+    var startupLog = q(dir + '\\engine-startup.log');
+    var launchCmd = 'cmd /c cd /d ' + q(dir) + ' && ' + nodeCmd + ' start.cjs auto > ' + startupLog + ' 2>&1';
+    shell.Run(launchCmd, 1, false);
+    setStep('start', 'done');
+  } catch (e) { failStep('start', e.message); return; }
+
+  // Step 5: Register auto-start
+  setStep('autostart', 'active');
+  try {
+    var startup = shell.ExpandEnvironmentStrings('%APPDATA%') + '\\Microsoft\\Windows\\Start Menu\\Programs\\Startup';
+    fso.CopyFile(dir + '\\START.vbs', startup + '\\FounderFlow Engine.vbs', true);
+    setStep('autostart', 'done');
+  } catch (e) { failStep('autostart', e.message); return; }
+
+  $('steps').style.display = 'none';
+  $('done-screen').style.display = 'block';
+}
+
+function downloadFile(url, outPath) {
+  var psUrl = url.replace(/'/g, "''");
+  var psOut = outPath.replace(/'/g, "''");
+  var psCmd = 'powershell -NoProfile -Command "(New-Object System.Net.WebClient).DownloadFile(\'' + psUrl + '\', \'' + psOut + '\')"';
+  var code = shell.Run(psCmd, 0, true);
+  if (code !== 0) return false;
+  if (!fso.FileExists(outPath)) return false;
+  if (fso.GetFile(outPath).Size === 0) { fso.DeleteFile(outPath); return false; }
+  return true;
+}
+
+function tryRepair() {
+  var API_BASE = 'https://founderflow-dashboard.vercel.app';
+  var t = new Date().getTime();
+  try {
+    var tmpVer = dir + '\\_ver.tmp';
+    setStatus('start', 'Checking for updates...');
+    if (!downloadFile(API_BASE + '/api/version?t=' + t, tmpVer)) return false;
+    if (!fso.FileExists(tmpVer)) return false;
+    var ss = fso.OpenTextFile(tmpVer);
+    var vjson = ss.ReadAll();
+    ss.Close();
+    fso.DeleteFile(tmpVer);
+    var vdata = JSON.parse(vjson);
+    var latestVer = vdata.version;
+    var currentVer = '';
+    if (fso.FileExists(dir + '\\.version')) {
+      var s2 = fso.OpenTextFile(dir + '\\.version');
+      currentVer = s2.ReadAll().trim();
+      s2.Close();
+    }
+    if (latestVer === currentVer) return true; // Up to date
+
+    // Read workspace_id from config.json for blueprint-aware downloads
+    var wsId = '';
+    if (fso.FileExists(dir + '\\config.json')) {
+      try {
+        var cfgStream = fso.OpenTextFile(dir + '\\config.json');
+        var cfgJson = cfgStream.ReadAll();
+        cfgStream.Close();
+        var cfgObj = JSON.parse(cfgJson);
+        if (cfgObj.workspaceId) wsId = cfgObj.workspaceId;
+      } catch(e) {}
+    }
+
+    // Download fresh engine files (including shims which may be blocked by antivirus on first run)
+    var files = ['start.cjs', 'watchdog.cjs', 'engine.cjs', 'ai_setter.cjs', 'harvester.cjs', 'login.cjs', 'sender.cjs', 'package.json', 'node.cmd', 'npm.cmd', 'npx.cmd'];
+    for (var i = 0; i < files.length; i++) {
+      setStatus('start', 'Downloading ' + files[i] + '...');
+      var furl = API_BASE + '/api/engine-file/' + files[i] + '?engine_update=1&t=' + t;
+      if (wsId) furl += '&workspace_id=' + wsId;
+      if (!downloadFile(furl, dir + '\\' + files[i])) return false;
+    }
+
+    // Write .version
+    var vw = fso.CreateTextFile(dir + '\\.version', true);
+    vw.Write(latestVer);
+    vw.Close();
+
+    // npm install to fix any corruption
+    setStatus('start', 'Reinstalling dependencies...');
+    var c1 = shell.Run('cmd /c cd /d ' + q(dir) + ' && ' + getNpmCmd() + ' install --no-audit --no-fund', 0, true);
+    if (c1 !== 0) return false;
+
+    setStatus('start', 'Engine files updated');
+    return true;
+  } catch (e) {
+    setStatus('start', 'Repair skipped: ' + e.message);
+    return false;
+  }
+}
+
+// If already set up, launch silently and close
+function checkAndRun() {
+  shell = new ActiveXObject('WScript.Shell');
+  fso = new ActiveXObject('Scripting.FileSystemObject');
+  dir = document.location.pathname.replace(/^\//, '').replace(/\//g, '\\');
+  dir = dir.substring(0, dir.lastIndexOf('\\'));
+  if (fso.FolderExists(dir + '\\node_modules') && fso.FolderExists(dir + '\\sessions\\Default')) {
+    // Show repair progress in the existing steps UI
+    $('steps').style.display = 'block';
+    setStep('start', 'active');
+    setStatus('start', 'Verifying engine files...');
+    tryRepair();
+    var nodePath = getNodePath();
+    if (!nodePath) { setup(); return; }
+    // Verify node actually works before launching
+    if (!verifyNodePath(nodePath)) {
+      setStatus('start', 'Node.js verification failed — reinstalling...');
+      setup();
+      return;
+    }
+    var startupLog = q(dir + '\\engine-startup.log');
+    var launchCmd = 'cmd /c cd /d ' + q(dir) + ' && ' + q(nodePath) + ' start.cjs auto > ' + startupLog + ' 2>&1';
+    shell.Run(launchCmd, 1, false);
+    close();
+  } else {
+    setup();
+  }
+}
+// -->
+</script>
+</head>
+<body onload="checkAndRun()">
+<div class="container">
+<h1>FounderFlow Engine</h1>
+<p class="sub">One-time setup — installing and configuring your outreach engine.</p>
+<div id="steps">
+<div class="step" id="nodejs"><div class="num">0</div><div><div class="label">Node.js</div><div class="status" id="node-status">Checking...</div></div></div>
+<div class="step" id="deps"><div class="num">1</div><div><div class="label">Install dependencies</div><div class="status">Waiting...</div></div></div>
+<div class="step" id="browser"><div class="num">2</div><div><div class="label">Install Playwright browser</div><div class="status">Waiting...</div></div></div>
+<div class="step" id="login"><div class="num">3</div><div><div class="label">Instagram login</div><div class="status">Waiting...</div></div></div>
+<div class="step" id="start"><div class="num">4</div><div><div class="label">Start engine</div><div class="status">Waiting...</div></div></div>
+<div class="step" id="autostart"><div class="num">5</div><div><div class="label">Register auto-start</div><div class="status">Waiting...</div></div></div>
+</div>
+<div id="done-screen" class="done-screen">
+<h2>✅ Setup Complete</h2>
+<p>The engine is running in the background.</p>
+<p>Open your dashboard to monitor and control.</p>
+<button class="btn" onclick="close()">Close</button>
+</div>
+<div id="error-screen" class="error-screen">
+<h2>❌ Setup Failed</h2>
+<p id="error-msg"></p>
+<button class="btn" onclick="close()" style="background:#ef4444">Close</button>
+</div>
+</div>
+</body>
+</html>

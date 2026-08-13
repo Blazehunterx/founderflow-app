@@ -50,7 +50,13 @@ async function fetchEngineFiles() {
     await downloadFile(ENGINE_API_URL, zipPath);
     console.log('   Downloaded engine ZIP from dashboard');
 
-    execSync('unzip -o "' + zipPath + '" -d "' + DEST_ENGINE + '"', { stdio: 'inherit' });
+    // Extract ZIP using platform-appropriate tool
+    const isWindows = process.platform === 'win32';
+    if (isWindows) {
+      execSync('powershell -Command "Expand-Archive -Path \'' + zipPath + '\' -DestinationPath \'' + DEST_ENGINE + '\' -Force"', { stdio: 'inherit' });
+    } else {
+      execSync('unzip -o "' + zipPath + '" -d "' + DEST_ENGINE + '"', { stdio: 'inherit' });
+    }
     fs.unlinkSync(zipPath);
 
     // ZIP files may be prefixed with engine-update/ - move them to engine/ root
@@ -58,7 +64,12 @@ async function fetchEngineFiles() {
     if (fs.existsSync(extractedDir)) {
       const subFiles = fs.readdirSync(extractedDir);
       for (const f of subFiles) {
-        fs.renameSync(path.join(extractedDir, f), path.join(DEST_ENGINE, f));
+        const src = path.join(extractedDir, f);
+        const dest = path.join(DEST_ENGINE, f);
+        if (fs.existsSync(dest)) {
+          fs.rmSync(dest, { recursive: true, force: true });
+        }
+        fs.renameSync(src, dest);
       }
       fs.rmSync(extractedDir, { recursive: true });
     }

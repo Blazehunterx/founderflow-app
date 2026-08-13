@@ -28,31 +28,6 @@ function isLikelyMinor(bio, displayName) {
   return MINOR_SIGNALS.some(s => text.includes(s));
 }
 
-// Wellness/yoga nidra niche intent keywords
-const WELLNESS_INTENT_KEYWORDS = [
-  "want to learn","how do i","how to","looking for","interested in","recommend",
-  "suggestion","advice","tips","help","guide","resource","course","training",
-  "certification","teacher training","yoga nidra","nsdr","meditation","rest",
-  "nervous system","healing","wellness","coach","practitioner","reiki",
-  "somatic","trauma","regulation","breathe","breathwork","mindful",
-  "would love","anyone know","where can","can someone","does anyone",
-  "thinking about","considering","ready to","start","begin","join",
-  "community","group","program","workshop","retreat","class"
-];
-
-// Flirty/attraction niche intent keywords (original)
-const FLIRTY_INTENT_KEYWORDS = [
-  "❤️", "😍", "🔥", "🥵", "🤤", "😈", "💦", "🍑", "🍆", "beautiful", "gorgeous", "love", "stunning", "pretty", "cute", "perfect", "babe", "baby", "hot", "sweet", "angel", "wow", "goddess", "queen", "omg", "omgg", "omggg", "sexy", "fine", "thick", "thicc", "mommy", "mami", "momma", "damn", "lord", "wife", "wifey", "marry", "please", "obsessed", "bark", "step on me", "smash", "would"
-];
-
-function getIntentKeywords(niche) {
-  const lowerNiche = (niche || '').toLowerCase();
-  if (lowerNiche.includes('yoga') || lowerNiche.includes('wellness') || lowerNiche.includes('nidra') || lowerNiche.includes('health') || lowerNiche.includes('coaching')) {
-    return WELLNESS_INTENT_KEYWORDS;
-  }
-  return FLIRTY_INTENT_KEYWORDS;
-}
-
 async function checkGenderWithAI(photoUrl, apiKey) {
   try {
     const ctrl = new AbortController();
@@ -156,10 +131,7 @@ async function checkProfile(handle, config) {
       return { ok: false, reason: `followers ${Math.round(profileData.followerCount).toLocaleString()} > ${maxF.toLocaleString()}` };
     }
     if (isLikelyMinor(profileData.bio, profileData.displayName)) return { ok: false, reason: "likely minor" };
-    // Skip gender filter for wellness niches (yoga teachers are often female - that's the target audience)
-    const nicheText = (config.nicheTags || []).join(' ').toLowerCase() + ' ' + (config.niche || '').toLowerCase();
-    const isWellnessNiche = nicheText.includes('yoga') || nicheText.includes('wellness') || nicheText.includes('nidra') || nicheText.includes('health') || nicheText.includes('coaching') || nicheText.includes('reiki') || nicheText.includes('somatic');
-    if (profileData.photoUrl && config.geminiApiKey && !isWellnessNiche) {
+    if (profileData.photoUrl && config.geminiApiKey) {
       const gender = await checkGenderWithAI(profileData.photoUrl, config.geminiApiKey);
       if (gender === "female") return { ok: false, reason: "female (AI)" };
     }
@@ -200,129 +172,103 @@ async function scanComments(page, supabase, config) {
     } catch (e) {}
 
     const targetWorkspace = config.commentScanWorkspace || config.workspaceId;
+    const targetUsername = config.commentScanTarget || config.igUsername || 'kazumisworld';
     
-    // Support multiple target accounts (comma-separated)
-    const targetInput = config.commentScanTarget || config.igUsername || 'kazumisworld';
-    const targetAccounts = targetInput.split(',').map(t => t.trim()).filter(t => t);
+    log('💭', 'SCAN', 'Fetching recent active posts for @' + targetUsername + '...');
+    const recentPosts = await getRecentPosts(targetUsername);
+    if (!recentPosts.length) { log('💭', 'SCAN', 'Could not find any recent posts for @' + targetUsername); return 0; }
     
-    // Get intent keywords based on niche
-    const intentKeywords = getIntentKeywords(config.nicheTags?.join(' ') || config.niche || '');
-    log('💭', 'SCAN', 'Using ' + (intentKeywords === WELLNESS_INTENT_KEYWORDS ? 'wellness' : 'flirty') + ' intent keywords');
-    
-    let totalLeadsFound = 0;
+    const unscanned = recentPosts.filter(p => !scannedPosts.includes(p));
+    if (!unscanned.length) { log('💭', 'SCAN', 'All recent posts for @' + targetUsername + ' already scanned this cycle'); return 0; }
 
-    for (const targetUsername of targetAccounts) {
-      log('💭', 'SCAN', 'Fetching recent active posts for @' + targetUsername + '...');
-      const recentPosts = await getRecentPosts(targetUsername);
+    log('💭', 'SCAN', unscanned.length + ' new active posts to scan (' + scannedPosts.length + ' already done)');
+    stats.sessions++;
+
+    let leadsFound = 0, filtered = 0, processed = 0;
+
+    for (const shortcode of unscanned) {
+      processed++;
+      log('💭', 'SCAN', '[' + processed + '/' + unscanned.length + '] /' + targetUsername + '/p/' + shortcode + '/');
       
-      if (!recentPosts.length) {
-        log('💭', 'SCAN', 'Could not find any recent posts for @' + targetUsername + ' — skipping');
+      const commenters = await extractCommentersFromPost(shortcode);
+
+      if (commenters.length === 0) {
+        log('💭', 'SCAN', 'No commenters captured via Python API for ' + shortcode);
+        scannedPosts.push(shortcode);
+        await delay(jitter(15000, 5000));
         continue;
       }
-      
-      const unscanned = recentPosts.filter(p => !scannedPosts.includes(p));
-      if (!unscanned.length) {
-        log('💭', 'SCAN', 'All recent posts for @' + targetUsername + ' already scanned this cycle');
-        continue;
-      }
 
-      log('💭', 'SCAN', unscanned.length + ' new active posts to scan for @' + targetUsername + ' (' + scannedPosts.length + ' already done)');
-      stats.sessions++;
+      log('💭', 'SCAN', commenters.length + ' commenters captured — filtering...');
 
-      let leadsFound = 0, filtered = 0, processed = 0;
+      for (const commenter of commenters) {
+        const handle = commenter.username;
 
-      for (const shortcode of unscanned) {
-        processed++;
-        log('💭', 'SCAN', '[' + processed + '/' + unscanned.length + '] /' + targetUsername + '/p/' + shortcode + '/');
+        if (commenter.is_verified) {
+          log('🔍', 'SCAN', '@' + handle + ' ✗ is verified');
+          filtered++; stats.totalFiltered++; continue;
+        }
+
+        const commentText = (commenter.comment_text || '').toLowerCase();
+        const intentKeywords = ["❤️", "😍", "🔥", "🥵", "🤤", "😈", "💦", "🍑", "🍆", "beautiful", "gorgeous", "love", "stunning", "pretty", "cute", "perfect", "babe", "baby", "hot", "sweet", "angel", "wow", "goddess", "queen", "omg", "omgg", "omggg", "sexy", "fine", "thick", "thicc", "mommy", "mami", "momma", "damn", "lord", "wife", "wifey", "marry", "please", "obsessed", "bark", "step on me", "smash", "would"];
+        const showsIntent = intentKeywords.some(kw => commentText.includes(kw));
         
-        const commenters = await extractCommentersFromPost(shortcode);
+        if (!showsIntent) {
+            log('🔍', 'SCAN', '@' + handle + ' ✗ weak intent: ' + commentText.substring(0, 20).replace(/\n/g, ' '));
+            filtered++; stats.totalFiltered++; continue;
+        }
 
-        if (commenters.length === 0) {
-          log('💭', 'SCAN', 'No commenters captured via Python API for ' + shortcode);
-          scannedPosts.push(shortcode);
-          await delay(jitter(15000, 5000));
+        const { data: existing } = await supabase.from('leads').select('id')
+          .eq('workspace_id', targetWorkspace).eq('ig_handle', handle).limit(1);
+        if (existing && existing.length > 0) { stats.totalFiltered++; continue; }
+
+        if (commenter.follower_count !== null) {
+            const maxF = config.commentScanMaxFollowers || 100000;
+            if (commenter.follower_count > maxF) {
+              log('🔍', 'SCAN', '@' + handle + ' ✗ ' + Math.round(commenter.follower_count).toLocaleString() + ' followers > max');
+              filtered++; stats.totalFiltered++; continue;
+            }
+        }
+
+        const check = await checkProfile(handle, config);
+        stats.totalScanned++;
+
+        if (!check.ok) {
+          filtered++; stats.totalFiltered++;
+          log('🔍', 'SCAN', '@' + handle + ' ✗ ' + check.reason);
+          await delay(jitter(12000, 4000));
           continue;
         }
 
-        log('💭', 'SCAN', commenters.length + ' commenters captured — filtering...');
+        try {
+          await supabase.from('leads').insert({
+            workspace_id: targetWorkspace,
+            ig_handle: handle,
+            status: 'verified',
+            source: 'comment',
+            discovered_at: new Date().toISOString(),
+            full_name: commenter.full_name || check.data?.displayName || null,
+            follower_count: check.data?.followerCount || commenter.follower_count || null,
+            bio: check.data?.bio || null,
+          }).then(() => {}, () => {});
+          leadsFound++; stats.totalLeads++;
+          const fk = check.data?.followerCount ? ' (' + Math.round(check.data.followerCount / 1000) + 'K)' : '';
+          log('✅', 'SCAN', '@' + handle + ' ✓ added' + fk);
+        } catch (e) {}
 
-        for (const commenter of commenters) {
-          const handle = commenter.username;
-
-          if (commenter.is_verified) {
-            log('🔍', 'SCAN', '@' + handle + ' ✗ is verified');
-            filtered++; stats.totalFiltered++; continue;
-          }
-
-          const commentText = (commenter.comment_text || '').toLowerCase();
-          const showsIntent = intentKeywords.some(kw => commentText.includes(kw));
-          
-          if (!showsIntent) {
-              log('🔍', 'SCAN', '@' + handle + ' ✗ weak intent: ' + commentText.substring(0, 20).replace(/\n/g, ' '));
-              filtered++; stats.totalFiltered++; continue;
-          }
-
-          const { data: existing } = await supabase.from('leads').select('id')
-            .eq('workspace_id', targetWorkspace).eq('ig_handle', handle).limit(1);
-          if (existing && existing.length > 0) { stats.totalFiltered++; continue; }
-
-          if (commenter.follower_count !== null) {
-              const maxF = config.commentScanMaxFollowers || 100000;
-              if (commenter.follower_count > maxF) {
-                log('🔍', 'SCAN', '@' + handle + ' ✗ ' + Math.round(commenter.follower_count).toLocaleString() + ' followers > max');
-                filtered++; stats.totalFiltered++; continue;
-              }
-          }
-
-          const check = await checkProfile(handle, config);
-          stats.totalScanned++;
-
-          if (!check.ok) {
-            filtered++; stats.totalFiltered++;
-            log('🔍', 'SCAN', '@' + handle + ' ✗ ' + check.reason);
-            await delay(jitter(12000, 4000));
-            continue;
-          }
-
-          try {
-            await supabase.from('leads').insert({
-              workspace_id: targetWorkspace,
-              ig_handle: handle,
-              status: 'verified',
-              source: 'comment',
-              discovered_at: new Date().toISOString(),
-              full_name: commenter.full_name || check.data?.displayName || null,
-              follower_count: check.data?.followerCount || commenter.follower_count || null,
-              bio: check.data?.bio || null,
-            }).then(() => {}, () => {});
-            leadsFound++; stats.totalLeads++;
-            const fk = check.data?.followerCount ? ' (' + Math.round(check.data.followerCount / 1000) + 'K)' : '';
-            log('✅', 'SCAN', '@' + handle + ' ✓ added' + fk);
-          } catch (e) {}
-
-          await delay(jitter(15000, 6000));
-        }
-
-        scannedPosts.push(shortcode);
-        if (processed % 2 === 0) {
-          log('📊', 'SCAN', 'Progress: ' + processed + '/' + unscanned.length + ' posts | ' + leadsFound + ' leads | ' + filtered + ' filtered');
-        }
-        
-        await delay(jitter(25000, 10000));
+        await delay(jitter(15000, 6000));
       }
 
-      totalLeadsFound += leadsFound;
-      log('✅', 'SCAN', '@' + targetUsername + ' done: ' + leadsFound + ' leads found');
+      scannedPosts.push(shortcode);
+      if (processed % 2 === 0) {
+        log('📊', 'SCAN', 'Progress: ' + processed + '/' + unscanned.length + ' posts | ' + leadsFound + ' leads | ' + filtered + ' filtered');
+      }
       
-      // Pause between accounts
-      if (targetAccounts.indexOf(targetUsername) < targetAccounts.length - 1) {
-        log('💭', 'SCAN', 'Pausing 60-90s before next account...');
-        await delay(jitter(60000, 30000));
-      }
+      await delay(jitter(25000, 10000));
     }
 
     log('✅', 'SCAN', '─── SESSION DONE ───');
-    log('✅', 'SCAN', 'This session: ' + totalLeadsFound + ' leads | ' + stats.totalScanned + ' profiles checked | ' + stats.totalFiltered + ' filtered');
+    log('✅', 'SCAN', 'This session: ' + leadsFound + ' leads | ' + stats.totalScanned + ' profiles checked | ' + filtered + ' filtered');
     log('✅', 'SCAN', 'All-time: ' + stats.totalLeads + ' leads | ' + stats.sessions + ' sessions');
 
     try {
@@ -334,7 +280,7 @@ async function scanComments(page, supabase, config) {
       fs.writeFileSync(SCAN_STATE_PATH, JSON.stringify(state, null, 2));
     } catch (e) {}
 
-    return totalLeadsFound;
+    return leadsFound;
   } catch (e) {
     log('❌', 'SCAN_ERR', e.message);
     return 0;

@@ -23,32 +23,29 @@ function syncEngineFiles() {
   if (!fs.existsSync(ENGINE_SOURCE)) return;
   if (!fs.existsSync(ENGINE_DIR)) fs.mkdirSync(ENGINE_DIR, { recursive: true });
 
-  const SKIP_DIRS = ['node_modules', 'sessions', 'sessions2', 'founderflow_sessions'];
-
-  function copyDir(srcDir, destDir) {
-    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-    const entries = fs.readdirSync(srcDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const src = path.join(srcDir, entry.name);
-      const dest = path.join(destDir, entry.name);
-      if (entry.isDirectory()) {
-        if (SKIP_DIRS.includes(entry.name)) continue;
-        copyDir(src, dest);
-      } else {
-        // Preserve user-editable config.json
-        if (entry.name === 'config.json' && fs.existsSync(dest)) continue;
-        // Only copy if source is newer (don't overwrite downloaded updates with old bundled files)
-        if (fs.existsSync(dest)) {
-          const srcStat = fs.statSync(src);
-          const destStat = fs.statSync(dest);
-          if (srcStat.mtimeMs <= destStat.mtimeMs) continue;
+  const files = fs.readdirSync(ENGINE_SOURCE);
+  for (const file of files) {
+    const src = path.join(ENGINE_SOURCE, file);
+    const dest = path.join(ENGINE_DIR, file);
+    const stat = fs.statSync(src);
+    if (stat.isDirectory()) {
+      if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+      // Recurse into subdirectories (but skip node_modules, sessions)
+      if (['node_modules', 'sessions', 'sessions2', 'founderflow_sessions'].includes(file)) continue;
+      const subFiles = fs.readdirSync(src);
+      for (const sub of subFiles) {
+        const subSrc = path.join(src, sub);
+        const subDest = path.join(dest, sub);
+        if (!fs.existsSync(subDest)) {
+          fs.copyFileSync(subSrc, subDest);
         }
-        fs.copyFileSync(src, dest);
       }
+    } else {
+      // Overwrite config.json only if it doesn't exist (preserve user edits)
+      if (file === 'config.json' && fs.existsSync(dest)) continue;
+      if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
     }
   }
-
-  copyDir(ENGINE_SOURCE, ENGINE_DIR);
 }
 
 // Bundled Node.js path (inside app resources)
@@ -58,73 +55,10 @@ function getNodePath() {
     return 'node'; // Use system node in dev
   }
   const platform = process.platform;
-
-  // Helper: test if a node binary actually works
-  function testNode(binPath) {
-    try {
-      const v = execSync(`"${binPath}" --version`, { encoding: 'utf8', stdio: 'pipe', timeout: 5000 });
-      if (v && v.trim().startsWith('v')) return true;
-    } catch {}
-    return false;
-  }
-
-  // Check bundled runtime — try current arch first, then other arch
-  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-  const otherArch = arch === 'arm64' ? 'x64' : 'arm64';
-  const candidates = [];
-
   if (platform === 'win32') {
-    candidates.push(path.join(process.resourcesPath, 'node-runtime', 'node.exe'));
-    candidates.push(path.join(process.resourcesPath, 'node-runtime', arch, 'node.exe'));
-  } else {
-    // Mac/Linux: try top-level first, then arch subdirs
-    candidates.push(path.join(process.resourcesPath, 'node-runtime', 'bin', 'node'));
-    candidates.push(path.join(process.resourcesPath, 'node-runtime', arch, 'bin', 'node'));
-    candidates.push(path.join(process.resourcesPath, 'node-runtime', otherArch, 'bin', 'node'));
+    return path.join(process.resourcesPath, 'node-runtime', 'node.exe');
   }
-
-  for (const p of candidates) {
-    if (fs.existsSync(p) && testNode(p)) return p;
-  }
-
-  // Fallback: try system node on Mac/Linux via common paths
-  if (platform === 'darwin' || platform === 'linux') {
-    const commonPaths = [
-      'node',
-      '/usr/local/bin/node',
-      '/opt/homebrew/bin/node',
-      '/usr/bin/node',
-    ];
-    // Try nvm paths
-    try {
-      const home = process.env.HOME || '';
-      const nvmDir = path.join(home, '.nvm', 'versions', 'node');
-      if (fs.existsSync(nvmDir)) {
-        const versions = fs.readdirSync(nvmDir).filter(d => d.startsWith('v')).sort().reverse();
-        if (versions.length > 0) {
-          commonPaths.push(path.join(nvmDir, versions[0], 'bin', 'node'));
-        }
-      }
-    } catch {}
-    // Try fnm paths
-    try {
-      const home = process.env.HOME || '';
-      const fnmDir = path.join(home, '.local', 'share', 'fnm', 'node-versions');
-      if (fs.existsSync(fnmDir)) {
-        const versions = fs.readdirSync(fnmDir).filter(d => d.startsWith('v')).sort().reverse();
-        if (versions.length > 0) {
-          commonPaths.push(path.join(fnmDir, versions[0], 'installation', 'bin', 'node'));
-        }
-      }
-    } catch {}
-
-    for (const p of commonPaths) {
-      if (testNode(p)) return p;
-    }
-  }
-
-  // Last resort: return expected path even if missing (will show error)
-  return candidates[0];
+  return path.join(process.resourcesPath, 'node-runtime', 'bin', 'node');
 }
 
 // ── Window ────────────────────────────────────────
@@ -561,6 +495,14 @@ async function updateEngine() {
       fs.writeFileSync(CONFIG_PATH, configBackup);
     }
 
+    // Re-sync engine files from resources (updates bundled engine files)
+    syncEngineFiles();
+
+    // Restore config again (syncEngineFiles might overwrite)
+    if (configBackup) {
+      fs.writeFileSync(CONFIG_PATH, configBackup);
+    }
+
     // Clean up
     fs.unlinkSync(zipPath);
 
@@ -659,22 +601,8 @@ function installDependencies() {
     try {
       const engineExists = fs.existsSync(path.join(ENGINE_DIR, 'package.json'));
       if (!engineExists) {
-        // Fallback: create minimal package.json so npm install can proceed
-        const fallbackPkg = JSON.stringify({
-          name: 'founderflow-engine',
-          version: '3.0.0',
-          description: 'FounderFlow Instagram Outreach Engine',
-          main: 'engine.cjs',
-          engines: { node: '>=18' },
-          dependencies: {
-            'playwright': '1.40.0',
-            '@supabase/supabase-js': '^2.39.0',
-            'adm-zip': '^0.5.10',
-            'ws': '^8.16.0'
-          }
-        }, null, 2);
-        fs.writeFileSync(path.join(ENGINE_DIR, 'package.json'), fallbackPkg);
-        mainWindow?.webContents.send('deps:log', 'Created missing package.json (fallback)\\n');
+        reject(new Error('No package.json in engine directory'));
+        return;
       }
 
       const nodeModulesExists = fs.existsSync(path.join(ENGINE_DIR, 'node_modules'));
@@ -694,22 +622,6 @@ function installDependencies() {
       });
 
       mainWindow?.webContents.send('deps:log', result || 'npm install complete\n');
-
-      // Install Playwright Chromium browser
-      mainWindow?.webContents.send('deps:log', 'Installing Playwright Chromium browser...\n');
-      try {
-        const pwResult = execSync('npx playwright install chromium', {
-          cwd: ENGINE_DIR,
-          env: { ...process.env },
-          encoding: 'utf8',
-          maxBuffer: 1024 * 1024,
-          timeout: 300000,
-        });
-        mainWindow?.webContents.send('deps:log', pwResult || 'Playwright Chromium installed\n');
-      } catch (pwErr) {
-        mainWindow?.webContents.send('deps:log', 'Playwright browser install failed (will try system Chrome): ' + (pwErr.stdout || pwErr.message) + '\n');
-      }
-
       resolve({ success: true });
     } catch (err) {
       const msg = err.stdout || err.stderr || err.message;
@@ -735,6 +647,103 @@ ipcMain.handle('app:update-engine', updateEngine);
 ipcMain.handle('app:install-deps', installDependencies);
 ipcMain.handle('app:open-engine-dir', () => shell.openPath(ENGINE_DIR));
 ipcMain.handle('app:quit', () => app.quit());
+ipcMain.handle('app:fetch-upcoming-leads', fetchUpcomingLeads);
+ipcMain.handle('app:exclude-lead', excludeLead);
+
+// ── Lead Review ───────────────────────────────────
+async function fetchUpcomingLeads() {
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) {
+      return { success: false, error: 'No workspace configured' };
+    }
+    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    if (!config.workspaceId || !config.workspaceSecret) {
+      return { success: false, error: 'Workspace not connected' };
+    }
+
+    const https = require('https');
+    const url = `https://founderflow-dashboard.vercel.app/api/leads/upcoming?limit=500`;
+
+    return new Promise((resolve) => {
+      const req = https.get(url, {
+        headers: {
+          'x-workspace-id': config.workspaceId,
+          'x-workspace-secret': config.workspaceSecret,
+        }
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            if (json.error) { resolve({ success: false, error: json.error }); return; }
+            resolve({ success: true, leads: json.leads || [] });
+          } catch (e) {
+            resolve({ success: false, error: 'Invalid response from server' });
+          }
+        });
+      }).on('error', (e) => {
+        resolve({ success: false, error: e.message });
+      });
+      req.setTimeout(30000, () => {
+        req.destroy();
+        resolve({ success: false, error: 'Request timed out' });
+      });
+    });
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+async function excludeLead(event, leadId, reason) {
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) {
+      return { success: false, error: 'No workspace configured' };
+    }
+    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    if (!config.workspaceId || !config.workspaceSecret) {
+      return { success: false, error: 'Workspace not connected' };
+    }
+
+    const https = require('https');
+    const url = `https://founderflow-dashboard.vercel.app/api/leads/${leadId}/exclude`;
+
+    return new Promise((resolve) => {
+      const postData = JSON.stringify({ reason: reason || 'Removed from lead review' });
+      const req = https.request(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData),
+          'x-workspace-id': config.workspaceId,
+          'x-workspace-secret': config.workspaceSecret,
+        }
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            if (json.error) { resolve({ success: false, error: json.error }); return; }
+            resolve({ success: true });
+          } catch (e) {
+            resolve({ success: false, error: 'Invalid response from server' });
+          }
+        });
+      }).on('error', (e) => {
+        resolve({ success: false, error: e.message });
+      });
+      req.setTimeout(30000, () => {
+        req.destroy();
+        resolve({ success: false, error: 'Request timed out' });
+      });
+      req.write(postData);
+      req.end();
+    });
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
 
 // ── App Lifecycle ─────────────────────────────────
 app.whenReady().then(() => { syncEngineFiles(); createWindow(); });

@@ -94,6 +94,11 @@ async function checkEnvironment() {
   // Load settings
   await loadSettings();
 
+  // Show lead review if workspace already connected
+  if (env.configExists) {
+    showLeadReview();
+  }
+
   appendLog('Environment check complete', 'success');
 }
 
@@ -144,6 +149,10 @@ function createStep(state, num, title, desc, action) {
         input.remove();
         btn.remove();
         appendLog(`Connected to ${result.workspaceName || 'workspace'}`, 'success');
+
+        // Show lead review section
+        showLeadReview();
+        loadUpcomingLeads();
 
         // Re-run environment check to update session status
         env = await window.api.checkEnvironment();
@@ -371,3 +380,153 @@ function setDot(pillId, state) {
     if (dot) dot.className = `status-dot ${state}`;
   }
 }
+
+// ── Lead Review ───────────────────────────────────
+let upcomingLeads = [];
+let filteredLeads = [];
+let selectAllState = false;
+
+function showLeadReview() {
+  const card = document.getElementById('leadReviewCard');
+  if (card) card.style.display = 'block';
+}
+
+async function loadUpcomingLeads() {
+  const btn = document.getElementById('btnLoadLeads');
+  const list = document.getElementById('leadList');
+  const count = document.getElementById('leadCount');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Loading...';
+  list.innerHTML = '<div class="lead-empty">Loading upcoming leads...</div>';
+
+  const result = await window.api.fetchUpcomingLeads();
+
+  btn.disabled = false;
+  btn.textContent = '🔄 Load Leads';
+
+  if (!result.success) {
+    list.innerHTML = `<div class="lead-empty error">Failed: ${result.error}</div>`;
+    appendLog(`Lead review failed: ${result.error}`, 'error');
+    return;
+  }
+
+  upcomingLeads = result.leads || [];
+  filteredLeads = [...upcomingLeads];
+  count.textContent = upcomingLeads.length;
+  document.getElementById('leadSearch').value = '';
+  selectAllState = false;
+  renderLeadList();
+  appendLog(`Loaded ${upcomingLeads.length} upcoming leads`, 'success');
+}
+
+function filterLeads() {
+  const query = document.getElementById('leadSearch').value.trim().toLowerCase();
+  if (!query) {
+    filteredLeads = [...upcomingLeads];
+  } else {
+    filteredLeads = upcomingLeads.filter(lead =>
+      (lead.ig_handle || '').toLowerCase().includes(query) ||
+      (lead.full_name || '').toLowerCase().includes(query) ||
+      (lead.bio || '').toLowerCase().includes(query) ||
+      (lead.niche_tags || []).some((tag) => tag.toLowerCase().includes(query))
+    );
+  }
+  renderLeadList();
+}
+
+function toggleSelectAll() {
+  selectAllState = !selectAllState;
+  const checkboxes = document.querySelectorAll('.lead-checkbox');
+  checkboxes.forEach(cb => { cb.checked = selectAllState; });
+  updateExcludeButton();
+  const btn = document.getElementById('btnSelectAll');
+  btn.textContent = selectAllState ? '☐ Deselect All' : '☑ Select All';
+}
+
+function renderLeadList() {
+  const list = document.getElementById('leadList');
+  const excludeBtn = document.getElementById('btnExcludeSelected');
+  const count = document.getElementById('leadCount');
+
+  count.textContent = `${filteredLeads.length}${filteredLeads.length !== upcomingLeads.length ? ' / ' + upcomingLeads.length : ''}`;
+
+  if (filteredLeads.length === 0) {
+    list.innerHTML = '<div class="lead-empty">No upcoming leads found.</div>';
+    excludeBtn.disabled = true;
+    return;
+  }
+
+  list.innerHTML = '';
+  filteredLeads.forEach((lead, index) => {
+    const originalIndex = upcomingLeads.findIndex(l => l.id === lead.id);
+    const item = document.createElement('div');
+    item.className = 'lead-item';
+
+    const tags = (lead.niche_tags || []).slice(0, 5).map(tag => `<span class="lead-tag">${tag}</span>`).join('');
+    const metaParts = [];
+    if (lead.follower_count) metaParts.push(`${lead.follower_count.toLocaleString()} followers`);
+    if (lead.region) metaParts.push(lead.region);
+    if (lead.source) metaParts.push(lead.source);
+    const meta = metaParts.join(' · ');
+
+    item.innerHTML = `
+      <input type="checkbox" class="lead-checkbox" data-index="${originalIndex}" id="lead-check-${originalIndex}" onchange="updateExcludeButton()">
+      <div class="lead-info">
+        <div class="lead-handle">@${lead.ig_handle}</div>
+        ${lead.full_name ? `<div class="lead-name">${lead.full_name}</div>` : ''}
+        ${lead.bio ? `<div class="lead-bio">${lead.bio.substring(0, 160)}${lead.bio.length > 160 ? '...' : ''}</div>` : ''}
+        ${tags ? `<div class="lead-tags">${tags}</div>` : ''}
+        ${meta ? `<div class="lead-meta">${meta}</div>` : ''}
+      </div>
+    `;
+    list.appendChild(item);
+  });
+
+  updateExcludeButton();
+}
+
+function updateExcludeButton() {
+  const checked = document.querySelectorAll('.lead-checkbox:checked');
+  const excludeBtn = document.getElementById('btnExcludeSelected');
+  excludeBtn.disabled = checked.length === 0;
+  excludeBtn.textContent = checked.length > 0 ? `🚷 Exclude ${checked.length}` : '🚷 Exclude Selected';
+}
+
+async function excludeSelectedLeads() {
+  const checked = Array.from(document.querySelectorAll('.lead-checkbox:checked'));
+  if (checked.length === 0) return;
+
+  const excludeBtn = document.getElementById('btnExcludeSelected');
+  excludeBtn.disabled = true;
+  excludeBtn.textContent = '⏳ Excluding...';
+
+  let successCount = 0;
+  let failCount = 0;
+
+  for (const checkbox of checked) {
+    const index = parseInt(checkbox.dataset.index);
+    const lead = upcomingLeads[index];
+    if (!lead) continue;
+
+    const result = await window.api.excludeLead(lead.id, 'Removed from lead review in desktop app');
+    if (result.success) {
+      successCount++;
+    } else {
+      failCount++;
+      appendLog(`Failed to exclude @${lead.ig_handle}: ${result.error}`, 'error');
+    }
+  }
+
+  appendLog(`Excluded ${successCount} lead(s)${failCount > 0 ? `, ${failCount} failed` : ''}`, successCount > 0 ? 'success' : 'error');
+
+  // Refresh list
+  await loadUpcomingLeads();
+}
+
+// Expose to window for inline onclick handlers
+window.loadUpcomingLeads = loadUpcomingLeads;
+window.excludeSelectedLeads = excludeSelectedLeads;
+window.updateExcludeButton = updateExcludeButton;
+window.filterLeads = filterLeads;
+window.toggleSelectAll = toggleSelectAll;

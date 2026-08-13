@@ -47,6 +47,30 @@
           </div>
         </div>
 
+        <!-- Lead Review -->
+        <div class="card" id="leadReviewCard" style="display: none;">
+          <div class="card-header">
+            <span>Review Upcoming Leads</span>
+            <span class="lead-count" id="leadCount">0</span>
+          </div>
+          <div class="card-body">
+            <div class="lead-review-intro">
+              These people will be messaged next. Remove anyone you don't want to reach.
+            </div>
+            <div class="lead-filter">
+              <input type="text" id="leadSearch" placeholder="Search by handle or name..." oninput="filterLeads()">
+            </div>
+            <div class="lead-actions">
+              <button class="btn btn-secondary" id="btnLoadLeads" onclick="loadUpcomingLeads()" style="flex: 1; font-size: 11px;">🔄 Load Leads</button>
+              <button class="btn btn-secondary" id="btnSelectAll" onclick="toggleSelectAll()" style="flex: 1; font-size: 11px;">☑ Select All</button>
+              <button class="btn btn-danger" id="btnExcludeSelected" onclick="excludeSelectedLeads()" style="flex: 1; font-size: 11px;" disabled>🚷 Exclude Selected</button>
+            </div>
+            <div class="lead-list" id="leadList">
+              <div class="lead-empty">Click "Load Leads" to see upcoming outreach list.</div>
+            </div>
+          </div>
+        </div>
+
         <!-- Live Logs -->
         <div class="card card-logs">
           <div class="card-header">

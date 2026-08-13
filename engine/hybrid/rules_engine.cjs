@@ -375,6 +375,16 @@ function analyze(funnelState, lastMessage, leadData, isOutbound = false) {
   return decisions;
 }
 
+// ── Message Validation ──────────────────────────────────
+function validateMessage(lastIncoming, funnelState, funnelType) {
+  if (!lastIncoming) return { valid: false, error: 'empty_message' };
+  const banned = checkBannedWords(lastIncoming);
+  if (!banned.clean) {
+    return { valid: false, error: `banned_word_${banned.violations[0]?.match || 'detected'}` };
+  }
+  return { valid: true };
+}
+
 module.exports = {
   detectCrisis,
   detectHostility,
@@ -389,4 +399,5 @@ module.exports = {
   detectVulnerability,
   detectBothResponse,
   analyze,
+  validateMessage,
 };

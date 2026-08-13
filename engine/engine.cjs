@@ -5,25 +5,6 @@ const fs = require('fs');
 
 let checkAndReply = async () => {};
 try { checkAndReply = require('./ai_setter.cjs').checkAndReply; } catch (e) { console.warn('[LOAD_ERR] Failed to load ai_setter.cjs:', e.message); }
-let harvestFn = async () => 0;
-try { harvestFn = require('./harvester.cjs').harvest; } catch (e) { console.warn('[LOAD_ERR] Failed to load harvester.cjs:', e.message); }
-let affiliateFollowerHarvestFn = async () => 0;
-try { affiliateFollowerHarvestFn = require('./affiliate_follower_harvester.cjs').harvestAffiliateFollowers; } catch (e) { console.warn('[LOAD_ERR] Failed to load affiliate_follower_harvester.cjs:', e.message); }
-let wellnessFollowerHarvestFn = async () => 0;
-try { wellnessFollowerHarvestFn = require('./wellness_follower_harvester.cjs').harvestWellnessFollowers; } catch (e) { console.warn('[LOAD_ERR] Failed to load wellness_follower_harvester.cjs:', e.message); }
-function getHarvester(config) {
-  if (config.blueprintType === 'affiliate') return affiliateFollowerHarvestFn;
-  if (config.blueprintType === 'wellness') return wellnessFollowerHarvestFn;
-  return harvestFn;
-}
-let scanCommentsFn = async () => 0;
-try { scanCommentsFn = require('./comment_scanner.cjs').scanComments; } catch (e) { /* comment_scanner not included */ }
-let scanAffiliateCommentsFn = async () => 0;
-try { scanAffiliateCommentsFn = require('./affiliate_comment_scanner.cjs').scanAffiliateComments; } catch (e) { /* affiliate_comment_scanner not included */ }
-function getCommentScanner(config) {
-  if (config.blueprintType === 'affiliate') return scanAffiliateCommentsFn;
-  return scanCommentsFn;
-}
 let typeAndSend = async () => false;
 try { typeAndSend = require('./sender.cjs').typeAndSend; } catch (e) { console.warn('[LOAD_ERR] Failed to load sender.cjs:', e.message); }
 let startProxyBridge = async () => ({ localUrl: null, close: () => {} });
@@ -406,8 +387,6 @@ async function purgePopups(page) {
   for (let pass = 0; pass < 5; pass++) {
     try {
       await acceptCookieConsent(page);
-      // Use page.evaluate to find buttons via DOM traversal — Instagram renders
-      // popup buttons as div[role="button"], span, or a elements, NOT <button>
       const clicked = await page.evaluate(() => {
         const DISMISS_TEXTS = [
           'not now', 'not now.', 'ei nyt', 'ei nyt.',
@@ -435,10 +414,8 @@ async function purgePopups(page) {
 }
 
 function humanize(template, lead, firstName, topic, humanizerConfig) {
-  const JANI_FALLBACK = "Hey {{name}} — I came across your profile and something you posted caught my attention. I'm not here to pitch anything. I put together a free framework I built from years of rebuilding after addiction, prison, and complete breakdown. It's the exact structure I used to stop surviving and start operating. Thought it might hit different for someone like you. Want me to send it over?";
-  
   if (!template || template.trim().length < 20) {
-    template = JANI_FALLBACK;
+    return null; // No valid template — skip DM
   }
   let msg = template;
   const hStart = msg.indexOf('/*HUMANIZER:');
@@ -448,20 +425,7 @@ function humanize(template, lead, firstName, topic, humanizerConfig) {
   }
   const isFallback = firstName.toLowerCase() === 'there';
 
-  // Check raw template before name replacement — if user wrote their own opener (e.g. "Yoooo"),
-  // don't add a random greeting. Only add one if template starts with {name}.
-  const startsWithPlaceholder = msg.startsWith('{{name}}') || msg.startsWith('{name}');
-
-  if (startsWithPlaceholder && Math.random() > 0.5) {
-    const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
-    if (isFallback) {
-      msg = greeting + '! ' + msg.replace(/\{\{name\}\},?\s*/i, '').replace(/\{name\},?\s*/i, '').trim();
-    } else {
-      msg = greeting + ', ' + msg.charAt(0).toLowerCase() + msg.slice(1);
-    }
-  }
-  
-  // Replace variables last so greeting logic sees the raw template
+  // Replace variables
   msg = msg.replace(/\{\{name\}\}/g, firstName);
   msg = msg.replace(/\{name\}/g, firstName);
   msg = msg.replace(/\{\{handle\}\}/g, lead.ig_handle);
@@ -471,8 +435,6 @@ function humanize(template, lead, firstName, topic, humanizerConfig) {
   msg = msg.replace(/\{\{industry\/topic\}\}/g, topic);
   msg = msg.replace(/\{industry\/topic\}/g, topic);
   msg = msg.replace(/\{\{followers\}\}/g, (lead.follower_count || '0').toLocaleString());
-  msg = msg.replace(/\{\{source_creator\}\}/g, lead.source_creator || 'that account');
-  msg = msg.replace(/\{source_creator\}/g, lead.source_creator || 'that account');
   
   
   const spintaxRegex = /\{([^\{}|]+\|[^\}]+)\}/g;
@@ -536,7 +498,13 @@ async function saveState(state) {
 async function verifySession(context) {
   if (!context) return false;
   const cookies = await context.cookies('https://www.instagram.com');
-  return cookies.some(c => c.name === 'sessionid');
+  const hasSession = cookies.some(c => c.name === 'sessionid');
+  if (hasSession) return true;
+  // httpOnly sessionid cookies may not be visible via context.cookies() but session still works
+  // Check if we have ds_user_id + csrf which means we're authenticated
+  const hasUserId = cookies.some(c => c.name === 'ds_user_id');
+  const hasCsrf = cookies.some(c => c.name === 'csrf_token' || c.name === 'csrftoken');
+  return hasUserId && hasCsrf;
 }
 
 async function sendDM(page, handle, fullMessage) {
@@ -555,13 +523,18 @@ async function sendDM(page, handle, fullMessage) {
     await purgePopups(page);
     await delay(1000);
 
-    // Profile exists check
-    const pageBody = await page.evaluate(() => document.body.innerText.slice(0, 200)).catch(() => '');
-    if (pageBody.includes('this page isn\'t available') || pageBody.includes('Sorry, this page') || pageBody.includes('Page Not Found') || pageBody.includes('page not found') || pageBody.includes('noindex')) {
+    // Profile exists check — wait for content to load, then check for explicit error indicators
+    await delay(2000); // Extra wait for SPA content to render
+    const pageBody = await page.evaluate(() => document.body.innerText.slice(0, 500)).catch(() => '');
+    const pageUrl = page.url();
+    // Only flag as gone if we see explicit "not available" text OR got redirected to a different profile
+    const isExplicit404 = pageBody.includes('this page isn\'t available') || pageBody.includes('Sorry, this page') || pageBody.includes('Page Not Found');
+    const isLoginWall = pageUrl.includes('/accounts/login');
+    if (isExplicit404) {
       log('warn', 'PROFILE_GONE', `@${handle} does not exist — skipping`);
       return { success: false, error: 'Profile not found' };
     }
-    if (page.url().includes('/accounts/login')) {
+    if (isLoginWall) {
       log('error', 'SESSION_LOST', 'Session expired.');
       return { success: false, error: 'Session expired' };
     }
@@ -589,20 +562,32 @@ async function sendDM(page, handle, fullMessage) {
       await delay(2000);
     } catch (e) {}
 
-    // Click Message button — try Playwright's native click first, then synthetic DOM events
+    // Click Message button — try compose URL first (most reliable), then button detection
+    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+    await delay(500);
     let msgClicked = false;
-    try {
-      const msgLocator = page.locator('div[role="button"], button, span').filter({ hasText: /^Message$/ }).first();
-      if (await msgLocator.isVisible({ timeout: 5000 }).catch(() => false)) {
-        await msgLocator.click({ timeout: 5000 });
-        msgClicked = true;
-        log('info', 'CLICK', 'Clicked Message via Playwright locator');
-      }
-    } catch (e) {
-      log('info', 'CLICK', `Playwright click failed: ${e.message.substring(0, 60)}, trying synthetic`);
+
+    // PRIMARY: Navigate to compose screen directly (bypasses fragile button detection)
+    log('info', 'CLICK', `Navigating to compose screen for @${handle}`);
+    await page.goto(`https://www.instagram.com/direct/new/?username=${handle}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await delay(3000);
+    await purgePopups(page);
+    await delay(1000);
+
+    // Check if compose screen loaded (has "To" input field)
+    const hasComposeInput = await page.locator('input[name="queryBox"], input[placeholder*="Search"], input[aria-label*="To"], input[aria-label*="Search"]').first().isVisible({ timeout: 5000 }).catch(() => false);
+    if (hasComposeInput) {
+      msgClicked = true;
+      log('info', 'CLICK', 'Compose screen loaded');
     }
 
+    // FALLBACK: If compose didn't load, try Message button on profile
     if (!msgClicked) {
+      log('info', 'CLICK', 'Compose failed — trying Message button on profile');
+      await page.goto(`https://www.instagram.com/${handle}/`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await delay(3000);
+
+      // Synthetic DOM click
       msgClicked = await page.evaluate(() => {
         const MSG_KEYWORDS = ['message', 'send message', 'send a message', 'message request'];
         const matchesMessageButton = (el) => {
@@ -628,6 +613,27 @@ async function sendDM(page, handle, fullMessage) {
       if (msgClicked) log('info', 'CLICK', 'Clicked Message via synthetic events');
     }
 
+    // FALLBACK 2: Playwright locator
+    if (!msgClicked) {
+      try {
+        const msgLocator = page.locator('div[role="button"], button, span, a').filter({ hasText: /^Message$/ }).first();
+        if (await msgLocator.isVisible({ timeout: 5000 }).catch(() => false)) {
+          const href = await msgLocator.evaluate(el => el.tagName === 'A' ? el.getAttribute('href') : null).catch(() => null);
+          if (href && href.includes('/direct/')) {
+            log('info', 'CLICK', `Message is <a> link, navigating to ${href}`);
+            await page.goto(`https://www.instagram.com${href}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            msgClicked = true;
+          } else {
+            await msgLocator.click({ timeout: 5000 });
+            msgClicked = true;
+            log('info', 'CLICK', 'Clicked Message via Playwright locator');
+          }
+        }
+      } catch (e) {
+        log('info', 'CLICK', `Playwright click failed: ${e.message.substring(0, 60)}`);
+      }
+    }
+
     if (!msgClicked) {
       log('warn', 'CLICK', 'Message button not found on profile');
       return { success: false, error: 'Message button not found' };
@@ -643,6 +649,104 @@ async function sendDM(page, handle, fullMessage) {
     // Diagnostic: screenshot + URL after click
     await page.screenshot({ path: `debug_after_click_${handle}.png` }).catch(() => {});
     log('info', 'DEBUG', `URL after click: ${page.url()}`);
+
+    // If we landed on /direct/inbox/ (nav bar link), redirect to compose screen
+    if (page.url().includes('/direct/inbox') && !page.url().includes('/direct/t/')) {
+      log('info', 'CLICK', `Landed on inbox instead of thread — navigating to compose for @${handle}`);
+      await page.goto(`https://www.instagram.com/direct/new/?username=${handle}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await delay(3000);
+      await purgePopups(page);
+      await delay(1000);
+    }
+
+    // If we're still on the profile page, the Message click didn't navigate — try direct URL
+    if (page.url().includes(`/${handle}/`) && !page.url().includes('/direct/')) {
+      log('info', 'CLICK', `Still on profile after click — navigating to DM directly`);
+      const directHref = await page.evaluate(() => {
+        for (const a of document.querySelectorAll('a[href*="/direct/"]')) {
+          const text = (a.textContent || '').trim().toLowerCase();
+          if (text === 'message') return a.getAttribute('href');
+        }
+        return null;
+      }).catch(() => null);
+
+      if (directHref) {
+        log('info', 'CLICK', `Found direct link: ${directHref}`);
+        await page.goto(`https://www.instagram.com${directHref}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      } else {
+        log('info', 'CLICK', `No direct link found — trying /direct/new/?username=`);
+        await page.goto(`https://www.instagram.com/direct/new/?username=${handle}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      }
+      await delay(3000);
+      await purgePopups(page);
+      await delay(1000);
+    }
+
+    // COMPOSE SCREEN HANDLER: If we're on /direct/new/ (compose screen), complete the flow
+    if (page.url().includes('/direct/new')) {
+      log('info', 'CLICK', `On compose screen — completing DM flow for @${handle}`);
+
+      const toInput = page.locator('input[name="queryBox"], input[placeholder*="Search"], input[aria-label*="To"], input[aria-label*="Search"]').first();
+      if (await toInput.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await toInput.click();
+        await delay(500);
+        await toInput.fill('');
+        await delay(300);
+        await toInput.fill(handle);
+        log('info', 'CLICK', `Typed @${handle} in To field`);
+        await delay(3000); // Wait for search results to load
+
+        // Check for "No results found" FIRST — before trying to click suggestions
+        const noResults = await page.evaluate(() => {
+          const text = document.body.innerText || '';
+          return text.includes('No results found') || text.includes('no results');
+        }).catch(() => false);
+        if (noResults) {
+          log('warn', 'CLICK', `@${handle} not found in compose search — profile may be private or restricted`);
+          return { success: false, error: 'Username not found in compose search' };
+        }
+
+        const suggestionClicked = await page.evaluate((username) => {
+          for (const el of document.querySelectorAll('[role="listbox"] [role="option"], [role="listbox"] button, [role="listbox"] div, [role="dialog"] [role="option"]')) {
+            const text = (el.textContent || '').toLowerCase();
+            if (text.includes(username.toLowerCase())) {
+              el.click();
+              return true;
+            }
+          }
+          const firstOption = document.querySelector('[role="listbox"] [role="option"], [role="listbox"] button');
+          if (firstOption) { firstOption.click(); return true; }
+          return false;
+        }, handle).catch(() => false);
+
+        if (suggestionClicked) {
+          log('info', 'CLICK', `Selected @${handle} from suggestions`);
+          await delay(1000);
+        } else {
+          log('warn', 'CLICK', `Could not find @${handle} in suggestions`);
+        }
+
+        const chatClicked = await page.evaluate(() => {
+          for (const btn of document.querySelectorAll('button, div[role="button"]')) {
+            const text = (btn.textContent || '').trim().toLowerCase();
+            if (text === 'chat' || text === 'next' || text === 'start chat') {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        }).catch(() => false);
+
+        if (chatClicked) {
+          log('info', 'CLICK', `Clicked Chat/Next button`);
+          await delay(3000);
+        } else {
+          log('warn', 'CLICK', `Chat/Next button not found`);
+        }
+      } else {
+        log('warn', 'CLICK', `To input not found on compose screen`);
+      }
+    }
 
     // Check for cookie consent / dialogs that might block the chat overlay
     const hasDialog = await page.evaluate(() => {
@@ -780,15 +884,24 @@ async function main() {
     try { await supabase.from('settings').update({ warmup_start_date: config.warmupStartDate, updated_at: new Date().toISOString() }).eq('workspace_id', config.workspaceId); } catch (e) {}
   }
 
-  const baseTemplate = config.dmTemplate || '';
-  const commentTemplate = config.dmTemplateComment || baseTemplate;
-  let dailyLimit = config.dailyLimit || 45; // Force Jani's Day 3 limit
+  // ALWAYS recover warmupStartDate from DB — DB is source of truth, config.json may be stale
+  try {
+    const { data: dbSettings } = await supabase.from('settings').select('warmup_start_date').eq('workspace_id', config.workspaceId).maybeSingle();
+    if (dbSettings?.warmup_start_date) {
+      if (config.warmupStartDate && config.warmupStartDate !== dbSettings.warmup_start_date) {
+        log('info', 'WARMUP', `DB date (${dbSettings.warmup_start_date}) overrides config.json (${config.warmupStartDate})`);
+      }
+      config.warmupStartDate = dbSettings.warmup_start_date;
+    }
+  } catch (e) {}
+
+  let template = config.dmTemplate || '';
+  log('info', 'CONFIG_TEMPLATE', `Loaded dmTemplate from config (${template.length} chars): ${template.substring(0, 100) || 'EMPTY'}`);
+  let dailyLimit = config.dailyLimit || 30;
   const canAISetter = config.permissions ? config.permissions.canAISetter !== false : true;
-  let pulseIntervalMs = (config.pulseIntervalH || 0.5) * 3600 * 1000; // default 30 minutes
-  // Inbox mode: random 30-60 minutes between pulses for safety
-  if (config.inboxScanMode) {
-    pulseIntervalMs = (30 + Math.random() * 30) * 60 * 1000; // 30-60 min random
-  }
+  function hasAiKey() { return !!(config.grokApiKey || config.geminiApiKey || process.env.GROK_API_KEY || process.env.GEMINI_API_KEY); }
+  function aiSetterShouldRun() { return canAISetter && ((config.aiSetterEnabled === true && hasAiKey()) || config.deterministicFunnel === true); }
+  let pulseIntervalMs = (config.pulseIntervalH || 1) * 3600 * 1000;
 
   let humanizerConfig = {};
   function parseHumanizerConfig(tpl) {
@@ -800,7 +913,7 @@ async function main() {
     }
     return cfg;
   }
-  humanizerConfig = parseHumanizerConfig(baseTemplate);
+  humanizerConfig = parseHumanizerConfig(template);
 
   let delayMin = (humanizerConfig.minDelay || 300) * 1000;
   let delayMax = (humanizerConfig.maxDelay || 600) * 1000;
@@ -1104,19 +1217,78 @@ async function main() {
   let lastHeartbeatCleanup = 0;
   let heartbeatTimer = null;
   let cycleDmCount = 0;
-  let dmsSinceInboxCheck = 0;
-  const inboxCheckMin = 5;
-  const inboxCheckMax = 15;
-  let nextInboxCheckAt = inboxCheckMin + Math.floor(Math.random() * (inboxCheckMax - inboxCheckMin + 1));
   let settingsUpdatedAt = '';
 
   function reloadChangedModules() { /* no-op: hot-reload not needed */ }
 
   async function refreshLiveConfig() {
-    // CONFIG LOCKED: config.json on disk is the single source of truth.
-    // Engine commands (pause/resume/shutdown) are handled by checkEngineCommands().
-    // To change any setting: edit config.json locally and restart the engine.
-    return false;
+    // DB-FIRST: dashboard settings override local config.json. This lets non-technical users
+    // update templates, limits, and links via the dashboard without touching files.
+    try {
+      const { data: s } = await supabase
+        .from('settings')
+        .select('dm_template, daily_dm_limit, pulse_interval_h, ai_setter_enabled, ai_training_context, niche_tags, warmup_enabled, warmup_duration_days, warmup_start_date, calendly_link, schedule_enabled, schedule_start_hour, schedule_end_hour, schedule_timezone, followup_0_delay, followup_0_template, followup_1_delay, followup_1_template, followup_2_delay, followup_2_template, max_followups, comment_scan_enabled, comment_scan_target, comment_scan_max_followers, telegram_bot_token, telegram_chat_id, gemini_api_key, grok_api_key, framework_link, pre_dm_likes, blueprint_type, conversation_routing_step, conversation_steps, conversation_enabled, deterministic_funnel')
+        .eq('workspace_id', config.workspaceId)
+        .maybeSingle();
+      if (!s) return false;
+
+      let changed = false;
+      const oldTemplate = template;
+
+      if (s.dm_template && s.dm_template.trim().length >= 20 && s.dm_template !== template) {
+        template = s.dm_template;
+        config.dmTemplate = s.dm_template;
+        changed = true;
+      }
+      if (s.daily_dm_limit > 0) {
+        dailyLimit = s.daily_dm_limit;
+        config.dailyLimit = s.daily_dm_limit;
+      }
+      if (s.pulse_interval_h > 0) {
+        pulseIntervalMs = s.pulse_interval_h * 3600 * 1000;
+        config.pulseIntervalH = s.pulse_interval_h;
+      }
+      if (s.ai_setter_enabled !== undefined) config.aiSetterEnabled = s.ai_setter_enabled;
+      if (s.ai_training_context) config.aiTrainingContext = s.ai_training_context;
+      if (s.niche_tags) config.nicheTags = s.niche_tags;
+      if (s.warmup_enabled !== undefined) config.warmupEnabled = s.warmup_enabled;
+      if (s.warmup_duration_days > 0) config.warmupDurationDays = s.warmup_duration_days;
+      if (s.warmup_start_date) config.warmupStartDate = s.warmup_start_date;
+      if (s.calendly_link) config.calendlyLink = s.calendly_link;
+      if (s.schedule_enabled !== undefined) config.scheduleEnabled = s.schedule_enabled;
+      if (s.schedule_start_hour !== undefined && s.schedule_start_hour !== null) config.scheduleStartHour = s.schedule_start_hour;
+      if (s.schedule_end_hour !== undefined && s.schedule_end_hour !== null) config.scheduleEndHour = s.schedule_end_hour;
+      if (s.schedule_timezone) config.scheduleTimezone = s.schedule_timezone;
+      if (s.followup_0_delay > 0) config.followupDelays = [s.followup_0_delay, s.followup_1_delay ?? 5, s.followup_2_delay ?? 7];
+      if (s.followup_0_template !== undefined) config.followupTemplates = [s.followup_0_template || '', s.followup_1_template || '', s.followup_2_template || ''];
+      if (s.max_followups !== undefined && s.max_followups !== null) config.maxFollowups = s.max_followups;
+      if (s.comment_scan_enabled !== undefined) config.commentScanEnabled = s.comment_scan_enabled;
+      if (s.comment_scan_target) config.commentScanTarget = s.comment_scan_target;
+      if (s.comment_scan_max_followers !== undefined) config.commentScanMaxFollowers = s.comment_scan_max_followers;
+      if (s.telegram_bot_token) config.telegramBotToken = s.telegram_bot_token;
+      if (s.telegram_chat_id) config.telegramChatId = s.telegram_chat_id;
+      if (s.gemini_api_key) config.geminiApiKey = s.gemini_api_key;
+      if (s.grok_api_key) config.grokApiKey = s.grok_api_key;
+      if (s.framework_link) config.frameworkLink = s.framework_link;
+      if (s.pre_dm_likes !== undefined) config.preDmLikes = s.pre_dm_likes;
+      if (s.blueprint_type) config.blueprintType = s.blueprint_type;
+      if (s.conversation_routing_step !== undefined && s.conversation_routing_step !== null) config.conversationRoutingStep = s.conversation_routing_step;
+      if (s.conversation_steps) config.conversationSteps = s.conversation_steps;
+      if (s.conversation_enabled !== undefined && s.conversation_enabled !== null) config.conversationEnabled = s.conversation_enabled;
+      if (s.deterministic_funnel !== undefined && s.deterministic_funnel !== null) config.deterministicFunnel = s.deterministic_funnel;
+
+      if (changed) {
+        humanizerConfig = parseHumanizerConfig(template);
+        delayMin = (humanizerConfig.minDelay || 300) * 1000;
+        delayMax = (humanizerConfig.maxDelay || 600) * 1000;
+        pauseAfter = humanizerConfig.pauseAfter || 5;
+        log('info', 'CONFIG_REFRESH', `Template updated from DB (${oldTemplate.length} → ${template.length} chars)`);
+      }
+      return changed;
+    } catch (e) {
+      log('warn', 'CONFIG_REFRESH', `Failed: ${e.message}`);
+      return false;
+    }
   }
 
   // ── Engine command checker (used by heartbeat + pulse) ──
@@ -1136,7 +1308,7 @@ async function main() {
       let finalExitCode = null;
 
       for (const cmd of unacked) {
-        if (stopRequested && cmd.command !== 'hard_kill' && cmd.command !== 'update' && cmd.command !== 'start' && cmd.command !== 'restart' && cmd.command !== 'shutdown' && cmd.command !== 'force_reharvest') continue;
+        if (stopRequested && cmd.command !== 'hard_kill' && cmd.command !== 'update' && cmd.command !== 'start' && cmd.command !== 'restart' && cmd.command !== 'shutdown') continue;
 
         if (cmd.command === 'stop' && !paused) {
           paused = true;
@@ -1198,7 +1370,7 @@ async function main() {
               let currentVersion = '';
               if (fs.existsSync(VERSION_FILE)) currentVersion = fs.readFileSync(VERSION_FILE, 'utf8').trim();
               if (latestVersion && latestVersion !== currentVersion) {
-                const files = ['engine.cjs', 'ai_setter.cjs', 'harvester.cjs', 'sender.cjs', 'inject_cookies.cjs', 'ghost.cjs', 'start.cjs', 'login.cjs', 'watchdog.cjs', 'package.json'];
+                const files = ['engine.cjs', 'ai_setter.cjs', 'sender.cjs', 'inject_cookies.cjs', 'ghost.cjs', 'start.cjs', 'login.cjs', 'watchdog.cjs', 'package.json'];
                 let allOk = true;
                 for (const file of files) {
                   try {
@@ -1241,40 +1413,39 @@ async function main() {
             const handle = payload.handle || '';
             const message = payload.message || '';
             if (handle && message && page) {
-              log('info', 'FORCE_REPLY', `Dashboard-commanded reply to @${handle}...`);
-              const result = await sendDMWithTimeout(page, handle, message);
-              if (result.success) {
-                log('success', 'FORCE_REPLY', `Force reply sent to @${handle}`);
-                await supabase.from('outbox').insert({
-                  workspace_id: config.workspaceId,
-                  message,
-                  status: 'force_replied',
-                  sent_at: new Date().toISOString()
-                }).then(() => {}, () => {});
+              // Safety guard: only send if handle exists in leads table for this workspace
+              const { data: leadCheck } = await supabase
+                .from('leads')
+                .select('id')
+                .eq('workspace_id', config.workspaceId)
+                .eq('ig_handle', handle)
+                .limit(1);
+              if (!leadCheck || leadCheck.length === 0) {
+                log('warn', 'FORCE_REPLY', `@${handle} not in leads table — skipping to prevent spam to non-leads`);
               } else {
-                log('error', 'FORCE_REPLY', `Failed to send to @${handle}: ${result.error}`);
+                log('info', 'FORCE_REPLY', `Dashboard-commanded reply to @${handle}...`);
+                const result = await sendDMWithTimeout(page, handle, message);
+                if (result.success) {
+                  log('success', 'FORCE_REPLY', `Force reply sent to @${handle}`);
+                  await supabase.from('outbox').insert({
+                    workspace_id: config.workspaceId,
+                    message,
+                    status: 'force_replied',
+                    sent_at: new Date().toISOString()
+                  }).then(() => {}, () => {});
+                } else {
+                  log('error', 'FORCE_REPLY', `Failed to send to @${handle}: ${result.error}`);
+                }
               }
             }
           } catch (e) {
             log('error', 'FORCE_REPLY', e.message);
           }
-        } else if (cmd.command === 'force_reharvest') {
-          log('info', 'REHARVEST', 'Dashboard-commanded re-harvest...');
-          if (!page || !context) {
-            log('warn', 'REHARVEST', 'Cannot reharvest — browser is offline (engine paused or in deep sleep)');
-          } else {
-            try {
-              const found = await getHarvester(config)(page, supabase, config);
-              log('success', 'REHARVEST', `Re-harvest complete — ${found || 0} leads`);
-            } catch (e) {
-              log('error', 'REHARVEST', e.message);
-            }
-          }
         } else if (cmd.command === 'reload_settings') {
           log('info', 'RELOAD_SETTINGS', 'Dashboard changed settings — reloading config and running AI Setter');
           await refreshLiveConfig();
           reloadChangedModules();
-    if (config.aiSetterEnabled === true && canAISetter && (config.geminiApiKey || process.env.GEMINI_API_KEY) && state.firstPulseDone) {
+    if (aiSetterShouldRun() && state.firstPulseDone) {
             if (!paused && page && context) { await checkAndReply(page, supabase, config, context); }
             // Persist inbox cursor to state
             try {
@@ -1308,7 +1479,7 @@ async function main() {
   heartbeatTimer = setInterval(async () => {
     await sendHeartbeat(supabase, config.workspaceId, paused, ENGINE_VERSION);
     const configChanged = await refreshLiveConfig();
-    if (configChanged && config.aiSetterEnabled === true && canAISetter && (config.geminiApiKey || process.env.GEMINI_API_KEY)) {
+    if (configChanged && aiSetterShouldRun()) {
       if (!paused && page && context) {
         reloadChangedModules();
         log('info', 'CONFIG_CHANGED', 'Settings updated in dashboard — running AI Setter immediately');
@@ -1428,6 +1599,7 @@ async function main() {
           const body = await res.json();
           const latestVersion = body.version;
           if (body.geminiApiKey !== undefined) config.geminiApiKey = body.geminiApiKey || '';
+          if (body.grokApiKey !== undefined) config.grokApiKey = body.grokApiKey || '';
           if (latestVersion) {
             let currentVersion = '';
             const versionFile = path.resolve(__dirname, '.version');
@@ -1445,7 +1617,7 @@ async function main() {
       }
     }
 
-    if (config.aiSetterEnabled === true && canAISetter && (config.geminiApiKey || process.env.GEMINI_API_KEY)) {
+    if (aiSetterShouldRun()) {
       // Page health check before AI setter — dead page = inbox API returns empty
       try { await page.evaluate(() => 1); } catch (_) {
         log('warn', 'AISETTER_PRE', 'Page dead before AI setter — recovering...');
@@ -1575,73 +1747,7 @@ async function main() {
       }
     }
 
-    // Auto mode: harvest until target lead count is reached
-    const mode = config.mode || 'dm';
-    const targetLeadCount = config.targetLeadCount !== undefined ? config.targetLeadCount : 100;
-    if (mode === 'auto') {
-      const { count: discoveredCount } = await supabase
-        .from('leads')
-        .select('*', { count: 'exact', head: true })
-        .eq('workspace_id', config.workspaceId)
-        .eq('status', 'discovered');
-
-      if ((discoveredCount || 0) < targetLeadCount) {
-        log('info', 'AUTO', `Discovered leads: ${discoveredCount || 0}/${targetLeadCount}. Harvesting...`);
-        let found = 0;
-        try { found = await getHarvester(config)(page, supabase, config); } catch (e) {
-          log('error', 'AUTO', `Harvest failed: ${e.message}`);
-        }
-        if (found > 0) {
-          log('success', 'AUTO', `Harvested ${found} new leads.`);
-          const { count: newCount } = await supabase
-            .from('leads')
-            .select('*', { count: 'exact', head: true })
-            .eq('workspace_id', config.workspaceId)
-            .eq('status', 'discovered');
-          if ((newCount || 0) >= targetLeadCount) {
-            log('success', 'AUTO', `Target reached (${newCount}/${targetLeadCount}). Starting outreach.`);
-          }
-        }
-        // Reset page after harvest — prevents page crash from corrupted SPA state
-        try { await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); } catch (e) {}
-        await delay(3000);
-      } else {
-        log('info', 'AUTO', `Target reached (${discoveredCount}/${targetLeadCount}). Outreach mode.`);
-      }
-    }
-
-    // Comment-scan-only mode — scans target's posts for commenters, no DMs
-    if (mode === 'comment_scan') {
-      log('info', 'SCAN', 'Running comment-scan-only mode...');
-      try {
-        await getCommentScanner(config)(page, supabase, config);
-      } catch (e) {
-        log('warn', 'SCAN', `Comment scan failed: ${e.message}`);
-      }
-      // Reset page after scan
-      try { await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); } catch (e) {}
-      await delay(3000);
-      // Heartbeat before sleep
-      await sendHeartbeat(supabase, config.workspaceId, page, false);
-      log('info', 'SCAN', `Sleeping ${Math.round(config.pulseIntervalH * 3600)}s until next scan...`);
-      await sleepWithCancel(config.pulseIntervalH * 3600 * 1000);
-      continue; // skip DM loop entirely
-    }
-
-    // Comment scan — optional, scans own posts for commenters to add as leads
-    if (config.commentScanEnabled) {
-      log('info', 'SCAN', 'Running comment scan...');
-      try {
-        await getCommentScanner(config)(page, supabase, config);
-      } catch (e) {
-        log('warn', 'SCAN', `Comment scan failed: ${e.message}`);
-      }
-      // Reset page after scan
-      try { await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); } catch (e) {}
-      await delay(3000);
-    }
-
-    // Reset page to clean state before DM loop — prevents React SPA crash after harvest or AI Setter
+    // Reset page to clean state before DM loop — prevents React SPA crash after AI Setter
     try { await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); } catch (e) {}
     await delay(3000);
 
@@ -1686,6 +1792,28 @@ async function main() {
       }
     }
 
+    // CURSOR RECOVERY: if 0 leads found and cursor is set, it may be stuck ahead of all leads — clear and retry
+    if (leads && leads.length === 0 && state.lastCursor) {
+      log('warn', 'CURSOR_RECOVERY', `0 leads with lastCursor=${state.lastCursor} — clearing cursor and retrying`);
+      delete state.lastCursor;
+      delete state.lastLeadId;
+      await saveState(state);
+      let retryQuery = supabase
+        .from('leads')
+        .select('*')
+        .eq('workspace_id', config.workspaceId)
+        .in('status', ['discovered', 'verified'])
+        .order('discovered_at', { ascending: true })
+        .limit(100);
+      const retryResult = await retryQuery;
+      leads = retryResult.data;
+      if (retryResult.error) {
+        log('error', 'DM_QUERY_ERR', `Cursor recovery query failed: ${retryResult.error.message}`);
+      } else if (leads && leads.length > 0) {
+        log('success', 'CURSOR_RECOVERY', `Cursor cleared — found ${leads.length} leads without cursor filter`);
+      }
+    }
+
     // Filter out leads already processed this pulse session (prevents repeats on same timestamp)
     if (state.lastLeadId && leads) {
       const lastIndex = leads.findIndex(l => l.id === state.lastLeadId);
@@ -1700,13 +1828,10 @@ async function main() {
 
     sentThisPulse = 0;
     followupsSentThisPulse = 0;
+    const dmSentThisPulse = new Set(); // Track leads DM'd this pulse to prevent follow-up in same pulse
 
     if (leads && leads.length > 0) {
       log('info', 'ENGINE_LEADS', `${leads.length} leads. Starting...`);
-      // Reset per-pulse inbox check counter so we interleave replies during long DM batches
-      dmsSinceInboxCheck = 0;
-      nextInboxCheckAt = inboxCheckMin + Math.floor(Math.random() * (inboxCheckMax - inboxCheckMin + 1));
-      log('info', 'HUMANIZER', `Next inbox check scheduled after ${nextInboxCheckAt} DMs`);
 
     for (const lead of leads) {
       if (stopRequested) break;
@@ -1716,9 +1841,22 @@ async function main() {
         break;
       }
 
+      try { // Wrap entire DM iteration in try/catch to prevent crash
+
       log('info', 'ENGINE_DM', `@${lead.ig_handle}`);
 
       // Page health check — recreate if dead from previous iteration
+      if (!page) {
+        log('warn', 'HEALTH_CHECK', 'Page is null — creating new page...');
+        try {
+          page = await context.newPage();
+          await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await delay(5000);
+        } catch (e) {
+          log('warn', 'HEALTH_CHECK', 'Could not create page — skipping lead.');
+          continue;
+        }
+      }
       try { await page.evaluate(() => 1); } catch (_) {
         log('warn', 'HEALTH_CHECK', 'Page dead at start of iteration — creating new page...');
         try {
@@ -1761,11 +1899,15 @@ async function main() {
       }
       log('info', 'IDENTITY', `Resolved: ${firstName} (topic: ${leadTopic})`);
 
+      log('info', 'DM_TEMPLATE', `Using template (${template?.length || 0} chars): ${template?.substring(0, 80) || 'EMPTY'}`);
+
       const isDryRun = process.argv.includes('--dry');
-      const isCommentLead = (lead.source || '').toLowerCase() === 'comment_harvest';
-      const activeTemplate = isCommentLead ? commentTemplate : baseTemplate;
-      const openerVersion = isCommentLead ? 'comment_v1' : 'general_v1';
-      const message = humanize(activeTemplate, lead, firstName, leadTopic, humanizerConfig);
+      const message = humanize(template, lead, firstName, leadTopic, humanizerConfig);
+      
+      if (!message) {
+        log('warn', 'SKIP_NO_TEMPLATE', `@${lead.ig_handle} skipped — dmTemplate is empty`);
+        continue;
+      }
       
       let result;
       if (isDryRun) {
@@ -1788,8 +1930,7 @@ async function main() {
                 status: 'sent',
                 sent_at: new Date().toISOString()
               });
-              const sentConvData = { ...(lead.conversation_data || {}), opener_version: openerVersion, first_message: message };
-              await supabase.from('leads').update({ status: 'dm_sent', last_dm_sent_at: new Date().toISOString(), opener_version: openerVersion, conversation_data: sentConvData, last_updated_at: new Date().toISOString() }).eq('id', lead.id);
+              await supabase.from('leads').update({ status: 'dm_sent', last_dm_sent_at: new Date().toISOString(), last_updated_at: new Date().toISOString() }).eq('id', lead.id);
             } catch (e) {
               log('warn', 'OUTBOX_ERR', e.message);
             }
@@ -1797,6 +1938,7 @@ async function main() {
 
         sent++;
         sentThisPulse++;
+        dmSentThisPulse.add(lead.id);
             state.lastCursor = lead.discovered_at;
             delete state.lastLeadId;
             state.sentToday = sent;
@@ -1818,7 +1960,7 @@ async function main() {
       } else {
         log('error', 'FAIL', `@${lead.ig_handle}: ${result.error}`);
         const err = (result.error || '').toLowerCase();
-        if (err.includes('profile not found') || err.includes('message button not found') || err.includes('page context lost')) {
+        if (err.includes('profile not found') || err.includes('message button not found') || err.includes('page context lost') || err.includes('not found in compose search') || err.includes('chat box not found')) {
           try { await supabase.from('leads').update({ status: 'rejected', last_updated_at: new Date().toISOString() }).eq('id', lead.id); } catch (e) {}
         }
 
@@ -1857,61 +1999,25 @@ async function main() {
       {
         const baseMs = delayMin + Math.random() * (delayMax - delayMin);
         cycleDmCount++;
-        dmsSinceInboxCheck++;
-
-        // Periodic inbox check: every random 5-15 DMs, take a longer break and run AI Setter
-        const inboxCheckMin = config.dmInboxCheckEveryMin || 5;
-        const inboxCheckMax = config.dmInboxCheckEveryMax || 15;
-        const inboxBreakMin = config.dmInboxBreakMinMs || (20 * 60 * 1000);
-        const inboxBreakMax = config.dmInboxBreakMaxMs || (40 * 60 * 1000);
-
-        if (dmsSinceInboxCheck >= nextInboxCheckAt) {
-          const inboxBreakMs = inboxBreakMin + Math.random() * (inboxBreakMax - inboxBreakMin);
-          const normalBatchPause = 5 * 60 * 1000 + Math.random() * 10 * 60 * 1000; // 5-15 min
-          log('info', 'HUMANIZER', `Inbox check break — ${Math.round(inboxBreakMs/60000)}min after ${dmsSinceInboxCheck} DMs. Will scan inbox and answer replies.`);
-
-          // Run AI Setter to check inbox and reply to messages
-          if (config.aiSetterEnabled === true && canAISetter && (config.geminiApiKey || process.env.GEMINI_API_KEY)) {
-            try {
-              reloadChangedModules();
-              await checkAndReply(page, supabase, config, context);
-              // Persist inbox cursor
-              try {
-                const s = await loadState();
-                s.inboxCursor = config.inboxCursor || null;
-                s.requestsCursor = config.requestsCursor || null;
-                await saveState(s);
-              } catch (e) {}
-              log('success', 'INBOX_CHECK', 'Inbox scan and replies complete');
-            } catch (e) {
-              log('warn', 'INBOX_CHECK_ERR', `AI Setter inbox check failed: ${e.message}`);
-            }
-          } else {
-            log('info', 'INBOX_CHECK', 'AI Setter disabled or no API key — skipping inbox scan');
-          }
-
-          // Reset page after AI Setter (same as post-AI-setter reset in main loop)
-          try { await page.close().catch(() => {}); } catch (_) {}
-          try {
-            page = await context.newPage();
-            await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await delay(3000);
-          } catch (e) { log('warn', 'PAGE_RESET', `Post-inbox-check page reset failed: ${e.message}`); }
-
-          // Take the longer break
-          await delay(inboxBreakMs);
-
-          // Reset counters
-          dmsSinceInboxCheck = 0;
-          nextInboxCheckAt = inboxCheckMin + Math.floor(Math.random() * (inboxCheckMax - inboxCheckMin + 1));
-          log('info', 'HUMANIZER', `Next inbox check after ${nextInboxCheckAt} more DMs`);
-        } else if (pauseAfter > 0 && cycleDmCount % pauseAfter === 0) {
-          const extraPause = 5 * 60 * 1000 + Math.random() * 10 * 60 * 1000; // 5-15 min
+        if (pauseAfter > 0 && cycleDmCount % pauseAfter === 0) {
+          const extraPause = 300000 + Math.random() * 300000;
           log('info', 'HUMANIZER', `Pausing ${Math.round(extraPause/60000)}min after ${pauseAfter} DMs/fails`);
           await delay(baseMs + extraPause);
+          // Mid-pulse AI Setter: check for new replies during DM pauses
+          if (aiSetterShouldRun()) {
+            try {
+              log('info', 'AI_MIDPULSE', 'Running AI Setter mid-pulse during DM pause...');
+              await checkAndReply(page, supabase, config, context);
+            } catch (e) { log('warn', 'AI_MIDPULSE_ERR', e.message); }
+          }
         } else {
           await delay(baseMs);
         }
+      }
+
+      } catch (dmIterErr) {
+        log('error', 'DM_CRASH', `DM iteration crashed: ${dmIterErr.message}`);
+        // Don't break — continue to next lead
       }
     }
     } // end leads block
@@ -1928,7 +2034,7 @@ async function main() {
           .from('leads')
           .select('*')
           .eq('workspace_id', config.workspaceId)
-          .in('status', ['dm_sent', 'replied'])
+          .in('status', ['dm_sent'])
           .lt('followup_step', maxFU)
         .order('followup_step', { ascending: true })
         .order('last_dm_sent_at', { ascending: true })
@@ -1942,40 +2048,10 @@ async function main() {
           const delayDays = fuDelays[step] || 3;
           const lastSent = new Date(lead.last_dm_sent_at || lead.discovered_at).getTime();
           if (Date.now() - lastSent < delayDays * 86400000) continue; // not due yet
+          if (dmSentThisPulse.has(lead.id)) continue; // skip — first DM sent this same pulse
 
-          // Guard: check if lead has replied since last DM (AI Setter may have missed them)
-          try {
-            await page.goto(`https://www.instagram.com/direct/t/${lead.ig_handle}/`, { waitUntil: 'domcontentloaded', timeout: 15000 });
-            await delay(3000);
-            const newMsg = await page.evaluate(() => {
-              const items = Array.from(document.querySelectorAll('div[role="log"] div[role="row"], div[data-message]'));
-              if (items.length === 0) return false;
-              const last = items[items.length - 1];
-              const isSent = last.querySelector('[data-testid*="message-conversation-message-sent"], [data-testid*="sent"], [aria-label*="Sent"], [aria-label*="sent"], .x1n2onr6, [style*="margin-left: auto"], [style*="flex-end"]') !== null;
-              return !isSent; // true if last message is FROM the lead (not sent by us)
-            });
-            if (newMsg) {
-              // Keep status as dm_sent so AI Setter's per-lead check catches them next pulse.
-              // Set followup_step to max to prevent re-selection here.
-              await supabase.from('leads').update({ followup_step: maxFU, last_updated_at: new Date().toISOString() }).eq('id', lead.id);
-              log('warn', 'FOLLOWUP_SKIP', `@${lead.ig_handle} has new message — skipping follow-up, AI Setter will handle next pulse`);
-              continue;
-            }
-          } catch (e) { /* DOM check failed — try simpler fallback */
-            try {
-              const simpleCheck = await page.evaluate(() => {
-                const rows = document.querySelectorAll('div[role="log"] div[role="row"]');
-                if (rows.length === 0) return 'unknown';
-                const last = rows[rows.length - 1];
-                const sentIndicators = last.querySelector('[data-testid*="sent"], [aria-label*="Sent"], [aria-label*="sent"], [style*="flex-end"]');
-                return sentIndicators ? 'us' : 'them';
-              });
-              if (simpleCheck === 'us') {
-                log('warn', 'FOLLOWUP_SKIP', `@${lead.ig_handle} fallback check: last msg is from us — skipping follow-up`);
-                continue;
-              }
-            } catch (e2) { /* both checks failed, proceed with follow-up */ }
-          }
+          // Guard: only send follow-ups to dm_sent leads — replied leads are handled by AI Setter
+          // (Old DOM check removed — it navigated to /direct/t/{username}/ which 404s; Instagram DM URLs need numeric thread IDs)
 
           log('info', 'FOLLOWUP', `@${lead.ig_handle} step ${step + 1}/${maxFU}`);
           
@@ -2007,6 +2083,10 @@ async function main() {
           }
           
           const message = humanize(fuTemplates[step], lead, firstName, leadTopic, humanizerConfig);
+          if (!message) {
+            log('warn', 'SKIP_NO_FOLLOWUP', `@${lead.ig_handle} follow-up step ${step} skipped — template empty`);
+            continue;
+          }
           const result = await sendDMWithTimeout(page, lead.ig_handle, message);
 
           const newStep = step + 1;
@@ -2054,6 +2134,10 @@ async function main() {
               log('error', 'ACTION_BLOCKED', 'Instagram action block detected. Stopping engine for 24h.');
               stopRequested = true;
               break;
+            }
+            if (err2.includes('profile not found') || err2.includes('not exist')) {
+              try { await supabase.from('leads').update({ status: 'closed_lost', conversation_step: 99, followup_step: 99, last_updated_at: new Date().toISOString() }).eq('id', lead.id); } catch (e) {}
+              log('info', 'FOLLOWUP_CLEANUP', `@${lead.ig_handle} profile gone — marked closed_lost`);
             }
             // Human delay: random between min-max
             {
@@ -2108,11 +2192,10 @@ async function main() {
     }
 
     // Wait for next pulse (always, to avoid busy-loop)
-    const sleepMin = Math.round(pulseIntervalMs / 60000);
     if (leads && leads.length > 0 && sent < dailyLimit) {
-      log('info', 'SLEEP', `Waiting ${sleepMin}min for next pulse...`);
+      log('info', 'SLEEP', `Waiting ${config.pulseIntervalH || 1}h for new leads...`);
     } else {
-      log('info', 'SLEEP', `Waiting ${sleepMin}min (${leads ? leads.length : 0} leads, ${sent}/${dailyLimit} sent)...`);
+      log('info', 'SLEEP', `Waiting ${config.pulseIntervalH || 1}h (${leads ? leads.length : 0} leads, ${sent}/${dailyLimit} sent)...`);
     }
 
     // 🛡️ Memory refresh: close old pages every 4 pulses instead of restarting (preserves session)

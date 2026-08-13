@@ -13,7 +13,7 @@
  */
 const { analyze } = require('./rules_engine_jani.cjs');
 const { generateResponse } = require('./llm_responder_jani.cjs');
-const { validate } = require('./validator.cjs');
+const { validate } = require('./validator_jani.cjs');
 const { STAGES, FUNNEL_STARTING_STAGE, getProfileConfig, TIMING } = require('./funnel_config_jani.cjs');
 
 // ── Valid Stage Transitions ──────────────────────────────
@@ -200,6 +200,11 @@ async function handleInboundMessage(lead, lastMessages, config, funnelState, api
         name: lead.first_name || '',
         tags: [...cfg.aWeber.tags, `workspace-${config.workspaceId?.substring(0, 8)}`],
         customFields: { ig_handle: lead.ig_handle || '', source: 'instagram_dm' },
+        refreshToken: config.aweberRefreshToken,
+        clientId: config.aweberClientId,
+        clientSecret: config.aweberClientSecret,
+        supabase,
+        workspaceId: config.workspaceId,
       });
 
       if (aweberResult.success) {

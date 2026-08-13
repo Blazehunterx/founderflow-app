@@ -89,20 +89,52 @@ async function harvest(page, supabase, config) {
   if (fs.existsSync(rotationPath)) {
     try { rotation = JSON.parse(fs.readFileSync(rotationPath, 'utf8')).index || 0; } catch (e) {}
   }
-  var tagSets = [
-    ['fashion founder','beauty founder','jewelry founder','skincare founder','wellness founder','ecommerce founder','shopify founder','brand founder','lingerie founder','accessories founder','footwear founder','lifestyle founder','swimwear founder','cosmetics founder','fragrance founder','homeware founder'],
-    ['fashion ceo','beauty ceo','ecom founder','brand owner','shopify store owner','fashion label founder','cosmetics brand ceo','skincare founder','jewelry brand owner','wellness founder','accessories brand ceo','lingerie brand owner','footwear brand ceo','lifestyle founder','homeware founder','fragrance founder'],
-    ['founder of fashion','founder of beauty','ceo of jewelry','owner of skincare','ecom brand founder','d2c founder','founder of accessories','ceo of footwear','owner of cosmetics','founder of wellness','ceo of lingerie','founder of swimwear','owner of lifestyle brand','founder of homeware','ceo of fragrance']
+  // Massive tag pool — 100+ terms covering every angle of the affiliate/online business niche
+  // Focused on everyday people wanting passive/remote income (NOT high-ticket/7-figure)
+  var allTags = [
+    // Core affiliate terms
+    'affiliate marketing','affiliate marketer','affiliate program','affiliate income','affiliate business','affiliate link','affiliate commission','affiliate strategy','affiliate tips','affiliate coach',
+    // Online business — beginner focused
+    'online business','online entrepreneur','online income','online earnings','online hustle','online coaching','online success','online revenue','online profit','online wealth','online freedom',
+    // Side hustle / extra income — everyday people
+    'side hustle','side business','extra income','passive income','passive income ideas','passive income stream','residual income','multiple income streams','income stream','income growth',
+    // Digital marketing / creator
+    'digital marketing','digital entrepreneur','digital creator','digital nomad','marketing coach','marketing tips','marketing strategy','marketing online','social media marketing','content creator',
+    // Make money — beginner friendly
+    'make money online','make money from home','financial freedom','financial independence','financial goals','financial literacy','wealth building','wealth mindset','money mindset','money coach',
+    // Freedom / lifestyle — everyday dreams
+    'freedom lifestyle','freedom entrepreneur','work from home','work remotely','remote income','remote work','digital nomad life','location independent','time freedom','financial freedom',
+    // Entrepreneur — early stage
+    'entrepreneur mindset','entrepreneur life','entrepreneur coach','business owner','business coach','business mentor','startup founder','founder life','boss life','beginner entrepreneur',
+    // Tools / platforms — accessible
+    'email marketing','funnel builder','clickfunnels','systeme.io','low ticket','recurring revenue','membership site','course creator','coach','consulting','agency owner',
+    // Beginner / learning — the core ICP
+    'learn affiliate','start affiliate','beginner affiliate','start online business','learn marketing','start digital marketing','start side hustle','beginner online','first online income','new to affiliate',
+    // Outcome — realistic, not 7-figure
+    'replaced income','quit nine to five','quit corporate','left my job','freelance life','solopreneur','work from laptop','earn from home','online income beginner','side hustle beginner',
+    // Everyday people
+    'stay at home mom income','college student income','remote job','online job','part time online','full time remote','digital income','online opportunity','start earning online','beginner side hustle'
   ];
-  var selectedTags = tagSets[rotation % tagSets.length];
+
+  var selectedTags = [];
+  // Pick 16 random tags from the pool each cycle for variety
+  var shuffledTags = allTags.slice();
+  for (var t = shuffledTags.length - 1; t > 0; t--) {
+    var tr = Math.floor(Math.random() * (t + 1));
+    var tt = shuffledTags[t]; shuffledTags[t] = shuffledTags[tr]; shuffledTags[tr] = tt;
+  }
+  selectedTags = shuffledTags.slice(0, 16);
   fs.writeFileSync(rotationPath, JSON.stringify({ index: rotation + 1 }));
-  log('🔵', 'HARVEST', 'Tag set #' + ((rotation % tagSets.length) + 1) + '/' + tagSets.length + ' (' + selectedTags.length + ' tags)');
-  const cities = config.targetRegions || ['mumbai', 'delhi', 'bangalore', 'chennai', 'kolkata', 'hyderabad', 'pune', 'ahmedabad', 'jaipur'];
+  log('🔵', 'HARVEST', 'Tag pool: ' + allTags.length + ' terms, selected 16 random');
+
+  const cities = config.targetRegions || ['new york','los angeles','chicago','houston','phoenix','san antonio','san diego','dallas','austin','miami','seattle','denver','boston','nashville','atlanta','vegas','portland','phoenix','detroit','minneapolis'];
 
   const queries = [];
   for (const niche of selectedTags) {
     queries.push(niche);
-    for (const city of cities.slice(0, 3)) {
+    // Add city variants for first 5 tags
+    var cityIdx = allTags.indexOf(niche);
+    for (const city of cities.slice(0, 5)) {
       queries.push(`${niche} ${city}`);
     }
   }
@@ -194,7 +226,73 @@ async function harvest(page, supabase, config) {
     }
     } // end Phase 1 search
 
-    log('🔵', 'HARVEST', `${foundHandles.size} unique handles from search`);
+    // Phase 1.5: Hashtag search — find users who POST about our niche
+    const hashtagPool = [
+      'affiliatemarketing', 'sidehustleideas', 'passiveincome', 'workfromhome',
+      'onlinebusiness', 'digitalmarketing', 'makemoneyonline', 'entrepreneurlife',
+      'freelancerlife', 'solopreneur', 'financialfreedom', 'locationindependent',
+      'remotework', 'onlineincome', 'emailmarketing', 'socialmediamarketing',
+      'contentcreator', 'leadgeneration', 'salesfunnel', 'clickfunnels',
+      'affiliatecoach', 'onlinecoaching', 'mompreneur', 'dadpreneur',
+      'quitthe9to5', 'buildyourbrand', 'digitalnomad', 'workfromanywhere',
+      'freedomlifestyle', 'wealthbuilding', 'financialliteracy', 'money mindset',
+      'extr income', 'homebasedbusiness', 'onlinemarketing', 'growthhacking'
+    ];
+    const selectedHashtags = [];
+    for (let i = 0; i < 8 && hashtagPool.length > 0; i++) {
+      const idx = Math.floor(Math.random() * hashtagPool.length);
+      selectedHashtags.push(hashtagPool.splice(idx, 1)[0]);
+    }
+    log('🔵', 'HARVEST', `Phase 1.5: Searching ${selectedHashtags.length} hashtags`);
+
+    for (const tag of selectedHashtags) {
+      if (leads.length >= maxLeads) break;
+      try {
+        await page.goto(`https://www.instagram.com/explore/tags/${tag}/`, { waitUntil: 'domcontentloaded', timeout: 8000 });
+        if (page.url().includes('/accounts/login')) break;
+        await new Promise(r => setTimeout(r, 2000));
+
+        const bodyText = await page.evaluate(function () {
+          return document.body ? document.body.innerText.slice(0, 200) : '';
+        });
+        if (rateLimitSignals.some(function (s) { return bodyText.toLowerCase().indexOf(s) !== -1; })) {
+          log('🚫', 'RATELIMIT', 'Rate limit on hashtag page. Skipping hashtags.');
+          break;
+        }
+
+        // Scroll 3 times to load more posts
+        for (let sc = 0; sc < 3; sc++) {
+          await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+          await new Promise(r => setTimeout(r, 1500));
+        }
+
+        const tagHandles = await page.evaluate(() => {
+          const links = document.querySelectorAll('a[href*="/"]');
+          const found = [];
+          for (const link of links) {
+            const href = link.getAttribute('href');
+            const m = href && href.match(/^\/([a-zA-Z0-9_.]+)\/?$/);
+            if (m && m[1] && m[1] !== 'explore' && m[1] !== 'accounts' && m[1] !== 'direct' && m[1] !== 'p' && m[1] !== 'reel' && m[1] !== 'stories' && m[1] !== tag) {
+              found.push(m[1].toLowerCase());
+            }
+          }
+          return [...new Set(found)];
+        }).catch(() => []);
+
+        let tagAdded = 0;
+        for (const h of tagHandles) {
+          if (!foundHandles.has(h) && !existingHandles.has(h) && !shuffled.includes(h)) {
+            foundHandles.add(h);
+            tagAdded++;
+          }
+        }
+        if (tagAdded > 0) {
+          log('🏷️', 'HASHTAG', `#${tag} → ${tagAdded} new handles (${tagHandles.length} total)`);
+        }
+      } catch (e) {}
+      await humanPause(1, 2);
+    }
+    log('🔵', 'HARVEST', `${foundHandles.size} unique handles after hashtag search`);
 
     // Shuffle for fresh order each run
     var shuffled = Array.from(foundHandles);
@@ -210,7 +308,9 @@ async function harvest(page, supabase, config) {
     } catch (e) {}
 
     // Phase 2: Check each handle's profile (fast but human-paced)
-    for (const handle of shuffled) {
+    const phase2Cap = Math.min(shuffled.length, 40);
+    for (let p2i = 0; p2i < phase2Cap; p2i++) {
+      const handle = shuffled[p2i];
       if (leads.length >= maxLeads) break;
       if (existingHandles.has(handle)) continue;
       checked++;
@@ -283,22 +383,44 @@ async function harvest(page, supabase, config) {
 
         const lower = (fullName + ' ' + bio + ' ' + handle).toLowerCase();
 
-        // Must have BOTH founder signal AND ecom signal (brand/store/shopify/ecom/boutique/label)
-        var isFounder = lower.indexOf('founder') !== -1 || lower.indexOf('ceo') !== -1 || lower.indexOf('owner') !== -1 || lower.indexOf('creative director') !== -1;
-        var isEcom = lower.indexOf('brand') !== -1 || lower.indexOf('shopify') !== -1 || lower.indexOf('store') !== -1 || lower.indexOf('ecom') !== -1 || lower.indexOf('boutique') !== -1 || lower.indexOf('label') !== -1 || lower.indexOf('shop') !== -1 || lower.indexOf('retail') !== -1 || lower.indexOf('fashion') !== -1 || lower.indexOf('beauty') !== -1 || lower.indexOf('jewelry') !== -1 || lower.indexOf('skincare') !== -1 || lower.indexOf('wellness') !== -1 || lower.indexOf('cosmetics') !== -1 || lower.indexOf('lingerie') !== -1 || lower.indexOf('swimwear') !== -1 || lower.indexOf('accessories') !== -1 || lower.indexOf('footwear') !== -1 || lower.indexOf('apparel') !== -1 || lower.indexOf('clothing') !== -1;
-        if (!isFounder || !isEcom) { continue; }
+        // Must have signal matching the target niche (affiliate/online business/income/freedom)
+        var isAffiliateNiche = lower.indexOf('affiliate') !== -1 || lower.indexOf('online business') !== -1 || lower.indexOf('side hustle') !== -1 || lower.indexOf('passive income') !== -1 || lower.indexOf('extra income') !== -1 || lower.indexOf('digital marketing') !== -1 || lower.indexOf('make money') !== -1 || lower.indexOf('work from home') !== -1 || lower.indexOf('freedom') !== -1 || lower.indexOf('financial') !== -1 || lower.indexOf('entrepreneur') !== -1 || lower.indexOf('income') !== -1 || lower.indexOf('marketing') !== -1 || lower.indexOf('coach') !== -1 || lower.indexOf('business') !== -1 || lower.indexOf('founder') !== -1 || lower.indexOf('ceo') !== -1 || lower.indexOf('owner') !== -1 || lower.indexOf('mentor') !== -1 || lower.indexOf('creator') !== -1 || lower.indexOf('influencer') !== -1 || lower.indexOf('brand') !== -1 || lower.indexOf('online') !== -1 || lower.indexOf('remote') !== -1 || lower.indexOf('digital') !== -1 || lower.indexOf('earn') !== -1 || lower.indexOf('revenue') !== -1 || lower.indexOf('profit') !== -1 || lower.indexOf('wealth') !== -1 || lower.indexOf('money') !== -1 || lower.indexOf('invest') !== -1;
+        if (!isAffiliateNiche) { continue; }
 
-        // REJECT all Indian leads — India is a no-go region
-        const indiaIndicators = [
-          'india','indian','india\u{1F1EE}\u{1F1F3}','bharat','desi','desi',
-          'mumbai','delhi','bangalore','bengaluru','chennai','kolkata','hyderabad','pune','ahmedabad','jaipur','surat','lucknow','kanpur','nagpur','indore','thane','bhopal','visakhapatnam','pimpri','patna','vadodara','ghaziabad','ludhiana','agra','nashik','faridabad','meerut','rajkot','kalyan','vasai','varanasi','srinagar','aurangabad','dhanbad','amritsar','navi mumbai','allahabad','ranchi','howrah','coimbatore','jabalpur','gwalior','vijayawada','jodhpur','madurai','raipur','kota','guwahati','chandigarh','solapur','hubli','tiruchirappalli','mysore','tiruppur','gurgaon','aligarh','jalandhar','bhubaneswar','salem','warangal','guntur','bhiwandi','saharanpur','gorakhpur','bikaner','amravati','noida','jhansi','ulhasnagar','mangalore','udupi','etawah','malegaon','davanagere','kozhikode','akola','kurnool','rajpur sonarpur','bokaro','bellary','patiala','gopalpur','agartala','bhilai','bhilwara','chandrapur','bharatpur','purnia','satna','mau','sonipat','farrukhabad','sambalpur','rewa','naihati','hapur','kamarhati','bulandshahr','durgapur','shahjahanpur','baranagar','shivamogga','pali','yamunanagar','sitapur','bhagalpur','hindupur','nandyal','bhiwani','morena','banda','mahbubnagar','hospet','phusro','itarsi','tiruvannamalai','baharampur','ongole','karimnagar','shimla','anantapur','danapur','bidar','motihari','bhalswa jahangirpur','panipat','karnal','rajahmundry','katihar','singrauli',' hardoi','nagda','sambhal','bhatpara','damoh','chapra','hajipur','phagwara','zirakpur','dibrugarh','kolar','rohtak','khammam','bhind','bhusawal','bathinda','raurkela','nangloi jat','tumkur','kharagpur','ambala','gandhidham','burhanpur','kumbakonam','rajapalayam','sikar','thanjavur','bhilwara','hazaribagh','nagda','khanna','udhampur','reasi','samba','kathua','doda','poonch','rajouri','anantnag','baramulla','bandipora','kulgam','kupwara','pulwama','budgam','ganderbal','shopian','srinagar','leh','ladakh','kargil',
+        // REJECT all non-western leads — Asia, Middle East, Africa are no-go regions
+        const nonWesternIndicators = [
+          // India (comprehensive)
+          'india','indian','india\u{1F1EE}\u{1F1F3}','bharat','desi',
+          'mumbai','delhi','bangalore','bengaluru','chennai','kolkata','hyderabad','pune','ahmedabad','jaipur','surat','lucknow','kanpur','nagpur','indore','thane','bhopal','visakhapatnam','pimpri','patna','vadodara','ghaziabad','ludhiana','agra','nashik','faridabad','meerut','rajkot','kalyan','vasai','varanasi','srinagar','aurangabad','dhanbad','amritsar','navi mumbai','allahabad','ranchi','howrah','coimbatore','jabalpur','gwalior','vijayawada','jodhpur','madurai','raipur','kota','guwahati','chandigarh','solapur','hubli','tiruchirappalli','mysore','tiruppur','gurgaon','aligarh','jalandhar','bhubaneswar','salem','warangal','guntur','bhiwandi','saharanpur','gorakhpur','bikaner','amravati','noida','jhansi','mangalore','udupi','kozhikode','kurnool','bokaro','patiala','agartala','bhilai','durgapur','shahjahanpur','tumkur','kharagpur','ambala','bathinda','raurkela',
           'tamil','telugu','hindi','marathi','bengali','gujarati','punjabi','malayalam','kannada','urdu','odia','assamese',
           'rupay','paytm','phonepe','upi','bhim','razorpay',
-          '₹','rs ','rs.','inr'
+          '₹','rs ','rs.','inr',
+          // South Asia
+          'pakistan','pakistani','bangladesh','bangladeshi','sri lanka','sri lankan','nepal','nepali','bhutan','maldives',
+          // East Asia
+          'china','chinese','japan','japanese','korea','korean','taiwan','taiwanese','hong kong',
+          'beijing','shanghai','tokyo','osaka','seoul','busan','taipei',
+          // Southeast Asia
+          'indonesia','indonesian','philippines','filipino','thailand','thai','vietnam','vietnamese',
+          'malaysia','malaysian','singapore','myanmar','cambodia','cambodian','laos','laotian','brunei',
+          'bangkok','manila','jakarta','ho chi minh','hanoi','kuala lumpur',
+          // Central Asia
+          'kazakhstan','uzbekistan','turkmenistan','kyrgyzstan','tajikistan',
+          // Middle East
+          'dubai','abu dhabi','sharjah','uae','united arab emirates','saudi','saudi arabia',
+          'qatar','bahrain','kuwait','oman','yemen',
+          'iran','iranian','iraq','iraqi','syria','syrian','jordan','lebanon','lebanese',
+          'israel','palestine','turkey','turkish','istanbul','ankara',
+          // Africa
+          'nigeria','nigerian','ghana','ghanaian','kenya','kenyan','ethiopia','ethiopian',
+          'egypt','egyptian','morocco','moroccan','tunisia','tunisian','algeria','algerian',
+          'south africa','cape town','johannesburg',
+          // Non-western scripts
+          'arabic','farsi','kurdish','nepali','sinhala','thai','khmer','lao','burmese',
         ];
-        const isIndia = indiaIndicators.some(ind => lower.includes(ind));
-        if (isIndia) {
-          log('⏭️', 'HARVEST', `@${handle} is from India — skipping`);
+        const isNonWestern = nonWesternIndicators.some(ind => lower.includes(ind));
+        if (isNonWestern) {
+          log('⏭️', 'HARVEST', `@${handle} is non-western — skipping`);
           continue;
         }
 
@@ -330,7 +452,129 @@ async function harvest(page, supabase, config) {
         });
 
         log('✅', 'FOUND', `@${handle} | ${followers.toLocaleString()} | "${fullName}"`);
+
+        // Spiderweb: scrape followers list from this profile (only every 3rd found, 1K-100K followers)
+        if (followers >= 1000 && followers <= 100000 && leads.length % 3 === 0) {
+          try {
+            await page.goto(`https://www.instagram.com/${handle}/followers/`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+            await new Promise(r => setTimeout(r, 2000));
+
+            if (!page.url().includes('/accounts/login')) {
+              const followerHandles = [];
+              const maxScrolls = 5;
+              for (let s = 0; s < maxScrolls; s++) {
+                const batch = await page.evaluate(() => {
+                  const links = document.querySelectorAll('a[href*="/"]');
+                  const found = [];
+                  for (const link of links) {
+                    const href = link.getAttribute('href');
+                    const m = href && href.match(/^\/([a-zA-Z0-9_.]+)\/?$/);
+                    if (m && m[1] && m[1] !== 'explore' && m[1] !== 'accounts' && m[1] !== 'direct' && m[1] !== 'p' && m[1] !== 'reel' && m[1] !== 'stories') {
+                      found.push(m[1].toLowerCase());
+                    }
+                  }
+                  return [...new Set(found)];
+                });
+                for (const h of batch) {
+                  if (!followerHandles.includes(h)) followerHandles.push(h);
+                }
+                if (followerHandles.length >= 50) break;
+                await page.evaluate(() => {
+                  const dialog = document.querySelector('[role="dialog"]') || document.querySelector('div[style*="overflow"]');
+                  if (dialog) dialog.scrollTop = dialog.scrollHeight;
+                  else window.scrollTo(0, document.body.scrollHeight);
+                });
+                await new Promise(r => setTimeout(r, 1000));
+              }
+
+              let added = 0;
+              for (const fh of followerHandles) {
+                if (!foundHandles.has(fh) && !existingHandles.has(fh) && !shuffled.includes(fh)) {
+                  foundHandles.add(fh);
+                  added++;
+                }
+              }
+              if (added > 0) {
+                log('🕸️', 'SPIDERWEB', `@${handle} → ${added} follower handles added (${followerHandles.length} scraped)`);
+              }
+            }
+          } catch (e) {}
+        }
       } catch (e) { log('⚠️', 'HARVEST', `Profile check failed for @${handle}: ${e.message}`); }
+    }
+
+    // Phase 3: Process spiderweb-discovered handles (follower scraping) — fast mode
+    const newSpiderHandles = Array.from(foundHandles).filter(h => !existingHandles.has(h) && !shuffled.includes(h));
+    const spiderCap = Math.min(newSpiderHandles.length, 20);
+    const spiderMaxLeads = Math.max(maxLeads, 300);
+    if (spiderCap > 0) {
+      log('🕸️', 'SPIDERWEB', `Phase 3: Processing ${spiderCap} of ${newSpiderHandles.length} spiderweb accounts`);
+      for (let i = 0; i < spiderCap; i++) {
+        const handle = newSpiderHandles[i];
+        if (leads.length >= spiderMaxLeads) break;
+        if (existingHandles.has(handle)) continue;
+        checked++;
+
+        try {
+          await page.goto(`https://www.instagram.com/${handle}/`, { waitUntil: 'domcontentloaded', timeout: 3000 });
+          if (page.url().includes('/accounts/login')) break;
+
+          const bodyText = await page.evaluate(function () {
+            return document.body ? document.body.innerText.slice(0, 200) : '';
+          });
+          if (rateLimitSignals.some(function (s) { return bodyText.toLowerCase().indexOf(s) !== -1; })) {
+            log('🚫', 'RATELIMIT', 'Rate limit during spiderweb. Aborting.');
+            break;
+          }
+
+          await humanPause(0.5, 1.5);
+
+          const raw = await page.evaluate(() => {
+            return document.querySelector('meta[name="description"]')?.getAttribute('content') || '';
+          });
+          const title = await page.evaluate(() => document.title || '');
+          if (!raw) continue;
+
+          const fm = raw.match(/^([\d,.]+[kKmM]?)\s+followers/i);
+          const nm = raw.match(/followers,\s+\d+.*?[-–—]\s+(.+?)\s+\(@/);
+          const bm = raw.match(/on Instagram:\s*"([^"]+)"/);
+          if (!fm) continue;
+
+          const followers = parseFollowers(fm[1]);
+          if (followers < actualMinFollowers) continue;
+          const maxFollowers = config.maxFollowers || Infinity;
+          if (followers > maxFollowers) continue;
+
+          let fullName = await page.evaluate(() => {
+            const h2 = document.querySelector('h2');
+            return h2 ? h2.innerText.trim() : '';
+          });
+          if (!fullName) fullName = nm?.[1] || '';
+          if (!fullName && title) {
+            const titleName = title.match(/^(.+?)\s*\(@/);
+            if (titleName) fullName = titleName[1].trim();
+          }
+          const bio = bm?.[1] || '';
+          const lower = (fullName + ' ' + bio + ' ' + handle).toLowerCase();
+
+          var isAffiliateNiche = lower.indexOf('affiliate') !== -1 || lower.indexOf('online business') !== -1 || lower.indexOf('side hustle') !== -1 || lower.indexOf('passive income') !== -1 || lower.indexOf('extra income') !== -1 || lower.indexOf('digital marketing') !== -1 || lower.indexOf('make money') !== -1 || lower.indexOf('work from home') !== -1 || lower.indexOf('freedom') !== -1 || lower.indexOf('financial') !== -1 || lower.indexOf('entrepreneur') !== -1 || lower.indexOf('income') !== -1 || lower.indexOf('marketing') !== -1 || lower.indexOf('coach') !== -1 || lower.indexOf('business') !== -1 || lower.indexOf('founder') !== -1 || lower.indexOf('ceo') !== -1 || lower.indexOf('owner') !== -1 || lower.indexOf('mentor') !== -1 || lower.indexOf('creator') !== -1 || lower.indexOf('influencer') !== -1 || lower.indexOf('brand') !== -1 || lower.indexOf('online') !== -1 || lower.indexOf('remote') !== -1 || lower.indexOf('digital') !== -1 || lower.indexOf('earn') !== -1 || lower.indexOf('revenue') !== -1 || lower.indexOf('profit') !== -1 || lower.indexOf('wealth') !== -1 || lower.indexOf('money') !== -1 || lower.indexOf('invest') !== -1;
+          if (!isAffiliateNiche) continue;
+
+          const isNonWestern = nonWesternIndicators.some(ind => lower.includes(ind));
+          if (isNonWestern) continue;
+
+          leads.push({
+            ig_handle: handle,
+            full_name: fullName,
+            follower_count: followers,
+            bio: bio.substring(0, 500),
+            niche_tags: selectedTags,
+            source_url: `https://www.instagram.com/${handle}/`,
+            discovered_at: new Date().toISOString()
+          });
+          log('✅', 'FOUND', `@${handle} | ${followers.toLocaleString()} | "${fullName}" (spiderweb)`);
+        } catch (e) {}
+      }
     }
   } finally {
     // Merge new leads with existing (dedup by handle)
@@ -370,7 +614,7 @@ async function harvest(page, supabase, config) {
           // Track leads with names for batch update after loop
           if (lead.full_name) leadsWithNames.push(lead);
         } catch (e) { log('⚠️', 'HARVEST', `Upsert failed for @${lead.ig_handle}: ${e.message}`); }
-        await delay(200 + Math.floor(Math.random() * 800));
+        await delay(100 + Math.floor(Math.random() * 200));
       }
       // Batch update existing leads missing full_name (parallel, no per-lead delay)
       if (leadsWithNames.length > 0) {
@@ -483,26 +727,35 @@ async function main() {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
 
-  // Auto-inject cookies from relay upload if available
-  var cookieFile = path.resolve(process.cwd(), 'ig_session_cookies.json');
-  if (fs.existsSync(cookieFile)) {
-    try {
-      var cookies = JSON.parse(fs.readFileSync(cookieFile, 'utf8'));
-      if (Array.isArray(cookies) && cookies.length > 0) {
-        await context.addCookies(cookies.map(function (c) {
-          return {
-            name: c.name,
-            value: c.value,
-            domain: c.domain || '.instagram.com',
-            path: c.path || '/',
-            httpOnly: c.httpOnly || false,
-            secure: c.secure !== false,
-            sameSite: c.sameSite || 'Lax'
-          };
-        }));
-        log('🔵', 'HARVEST', 'Injected ' + cookies.length + ' cookies from relay upload');
-      }
-    } catch (e) { log('⚠️', 'HARVEST', 'Cookie injection failed: ' + e.message); }
+  // Cookie injection: prefer persistent context (marvinvdsluis), inject relay cookies only if no session
+  const hasSession = await verifySession(context);
+  if (!hasSession) {
+    // Try relay upload cookies as fallback
+    var cookieFile = path.resolve(process.cwd(), 'ig_session_cookies.json');
+    if (fs.existsSync(cookieFile)) {
+      try {
+        var cookies = JSON.parse(fs.readFileSync(cookieFile, 'utf8'));
+        if (Array.isArray(cookies) && cookies.length > 0) {
+          var igCookies = cookies.filter(c => c.domain && c.domain.includes('instagram.com'));
+          if (igCookies.length >= 3) {
+            await context.addCookies(igCookies.map(function (c) {
+              return {
+                name: c.name,
+                value: c.value,
+                domain: c.domain || '.instagram.com',
+                path: c.path || '/',
+                httpOnly: c.httpOnly || false,
+                secure: c.secure !== false,
+                sameSite: c.sameSite || 'Lax'
+              };
+            }));
+            log('🔵', 'HARVEST', `Injected ${igCookies.length} cookies from relay upload`);
+          }
+        }
+      } catch (e) { log('⚠️', 'HARVEST', `Cookie injection failed: ${e.message}`); }
+    }
+  } else {
+    log('🔵', 'HARVEST', 'Using persistent context session (marvinvdsluis)');
   }
 
   if (!await verifySession(context)) {
