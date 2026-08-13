@@ -191,26 +191,32 @@ async function handleInboundMessage(lead, lastMessages, config, funnelState, api
       updatedFunnel.captured_email = email;
       updatedFunnel.current_stage = STAGES.DELIVERED;
 
-      // Subscribe to AWeber
-      const { subscribe } = require('./aweber_subscribe.cjs');
-      const aweberResult = await subscribe({
-        accessToken: config.aweberAccessToken,
-        listId: cfg.aWeber.listId,
-        email,
-        name: lead.first_name || '',
-        tags: [...cfg.aWeber.tags, `workspace-${config.workspaceId?.substring(0, 8)}`],
-        customFields: { ig_handle: lead.ig_handle || '', source: 'instagram_dm' },
-        refreshToken: config.aweberRefreshToken,
-        clientId: config.aweberClientId,
-        clientSecret: config.aweberClientSecret,
-        supabase,
-        workspaceId: config.workspaceId,
-      });
+      // Skip AWeber subscription if the lead previously unsubscribed
+      const isUnsubscribed = lead.aweber_status === 'unsubscribed' || lead.aweber_status === 'bounced' || lead.aweber_status === 'complained';
+      if (!isUnsubscribed) {
+        // Subscribe to AWeber
+        const { subscribe } = require('./aweber_subscribe.cjs');
+        const aweberResult = await subscribe({
+          accessToken: config.aweberAccessToken,
+          listId: cfg.aWeber.listId,
+          email,
+          name: lead.first_name || '',
+          tags: [...cfg.aWeber.tags, `workspace-${config.workspaceId?.substring(0, 8)}`],
+          customFields: { ig_handle: lead.ig_handle || '', source: 'instagram_dm' },
+          refreshToken: config.aweberRefreshToken,
+          clientId: config.aweberClientId,
+          clientSecret: config.aweberClientSecret,
+          supabase,
+          workspaceId: config.workspaceId,
+        });
 
-      if (aweberResult.success) {
-        log('info', 'AWEBER', `Subscribed ${email} to list ${cfg.aWeber.listId}${aweberResult.duplicate ? ' (duplicate)' : ''}`);
+        if (aweberResult.success) {
+          log('info', 'AWEBER', `Subscribed ${email} to list ${cfg.aWeber.listId}${aweberResult.duplicate ? ' (duplicate)' : ''}`);
+        } else {
+          log('warn', 'AWEBER_FAILED', `Failed to subscribe ${email}: ${aweberResult.error}`);
+        }
       } else {
-        log('warn', 'AWEBER_FAILED', `Failed to subscribe ${email}: ${aweberResult.error}`);
+        log('info', 'AWEBER_SKIP', `@${lead.ig_handle}: previously ${lead.aweber_status} — not re-adding to AWeber`);
       }
 
       // Build confirmation

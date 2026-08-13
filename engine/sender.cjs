@@ -210,6 +210,12 @@ async function typeAndSend(page, text) {
     try {
       await page.screenshot({ path: '/engine/dm_sent_latest.png' });
     } catch (e) {}
+
+    // If no send button was clicked, the message was definitely not sent
+    if (!sent) {
+      log('error', 'VERIFY', 'Send button was not clicked — treating as FAILED');
+      return { success: false, error: 'Send button not found or not clickable' };
+    }
     
     try {
       const blocked = await page.locator(':has-text("Action Blocked"), :has-text("We restrict"), :has-text("Couldn\'t send"), :has-text("Try Again Later")').first().isVisible({ timeout: 2000 }).catch(() => false);
@@ -221,27 +227,53 @@ async function typeAndSend(page, text) {
       await delay(2000); // Wait for message to render in DOM
       const verified = await page.evaluate(function (sentText) {
         var checkText = sentText.trim().substring(0, 80);
-        // Strategy 1: check dir-based elements (profile overlay bubbles)
-        var bubbles = document.querySelectorAll('div[dir], span[dir]');
-        for (var i = 0; i < bubbles.length; i++) {
-          if (bubbles[i].textContent.trim().indexOf(checkText) !== -1) return true;
+
+        // Helper: check if text is still sitting in the input box (means it wasn't sent)
+        var inputBox = document.querySelector('div[contenteditable="true"], div[role="textbox"], textarea[placeholder*="Message"]');
+        if (inputBox && inputBox.textContent.trim().indexOf(checkText) !== -1) {
+          return { ok: false, reason: 'message still in input box' };
         }
-        // Strategy 2: check full page text (works on dedicated thread page)
-        if (document.body.innerText.indexOf(checkText) !== -1) return true;
-        // Strategy 3: check for "Couldn't send" or error indicators
-        if (document.body.innerText.indexOf("Couldn't send") !== -1) return 'blocked';
-        if (document.body.innerText.indexOf("Try Again") !== -1) return 'blocked';
-        return false;
+
+        // Strategy 1: check actual message bubbles in the chat thread
+        // Instagram sent messages are typically in div[dir="auto"] inside the main region
+        var main = document.querySelector('[role="main"]');
+        var bubbles = (main || document).querySelectorAll('div[dir="auto"], span[dir="auto"]');
+        for (var i = 0; i < bubbles.length; i++) {
+          if (bubbles[i].textContent.trim().indexOf(checkText) !== -1) {
+            return { ok: true };
+          }
+        }
+
+        // Strategy 2: broader fallback for profile overlay / modal bubbles, but NOT input/body text
+        var allBubbles = document.querySelectorAll('div[dir], span[dir]');
+        for (var j = 0; j < allBubbles.length; j++) {
+          var el = allBubbles[j];
+          // Skip elements that are contenteditable or inside the composer
+          if (el.isContentEditable) continue;
+          var parentInput = el.closest('div[contenteditable="true"], [role="textbox"]');
+          if (parentInput) continue;
+          if (el.textContent.trim().indexOf(checkText) !== -1) {
+            return { ok: true };
+          }
+        }
+
+        // Strategy 3: check for explicit error indicators
+        var bodyText = document.body.innerText;
+        if (bodyText.indexOf("Couldn't send") !== -1) return { ok: false, reason: 'blocked' };
+        if (bodyText.indexOf("Try Again") !== -1) return { ok: false, reason: 'blocked' };
+
+        return { ok: false, reason: 'message not found in chat bubbles' };
       }, safeChunk);
-      if (verified === 'blocked') {
+
+      if (verified.reason === 'blocked') {
         log('error', 'VERIFY', 'Instagram blocked the message — Couldn\'t send detected');
         return { success: false, error: 'Message blocked by Instagram' };
       }
-      if (!verified) {
-        log('error', 'VERIFY', 'Message NOT found in DOM after send — treating as FAILED');
-        return { success: false, error: 'Message not verified in DOM' };
+      if (!verified.ok) {
+        log('error', 'VERIFY', 'Message NOT verified: ' + verified.reason);
+        return { success: false, error: 'Message not verified: ' + verified.reason };
       }
-      log('info', 'VERIFY', 'Message confirmed in DOM');
+      log('info', 'VERIFY', 'Message confirmed in chat bubbles');
     } catch (e) {
       log('error', 'VERIFY', `Verification check failed: ${e.message} — treating as FAILED`);
       return { success: false, error: `Verification failed: ${e.message}` };

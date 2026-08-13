@@ -1644,44 +1644,55 @@ async function checkAndReply(page, supabase, config, context) {
               if (m) { capturedName = m[1].trim(); break; }
             }
 
-            // Subscribe to AWeber
-            try {
-              const profileCfg = funnelConfig.getProfileConfig(funnelType);
-              const { subscribe } = require('./hybrid/aweber_subscribe.cjs');
-              const aweberResult = await subscribe({
-                accessToken: config.aweberAccessToken,
-                listId: profileCfg.aWeber.listId,
+            // Skip AWeber subscription if the lead previously unsubscribed
+            const isUnsubscribed = lead.aweber_status === 'unsubscribed' || lead.aweber_status === 'bounced' || lead.aweber_status === 'complained';
+            if (isUnsubscribed) {
+              log('info', 'AWEBER_SKIP', `@${thread.username}: previously ${lead.aweber_status} — not re-adding to AWeber`);
+              await supabase.from('leads').update({
                 email: capturedEmail,
-                name: capturedName || lead.first_name || '',
-                tags: [...profileCfg.aWeber.coreTags, `workspace-${(workspaceId || '').substring(0, 8)}`],
-                customFields: { ig_handle: thread.username, source: 'instagram_dm' },
-                refreshToken: config.aweberRefreshToken,
-                clientId: config.aweberClientId,
-                clientSecret: config.aweberClientSecret,
-                supabase,
-                workspaceId,
-              });
+                first_name: capturedName || lead.first_name || null,
+                last_updated_at: new Date().toISOString(),
+              }).eq('id', lead.id);
+            } else {
+              // Subscribe to AWeber
+              try {
+                const profileCfg = funnelConfig.getProfileConfig(funnelType);
+                const { subscribe } = require('./hybrid/aweber_subscribe.cjs');
+                const aweberResult = await subscribe({
+                  accessToken: config.aweberAccessToken,
+                  listId: profileCfg.aWeber.listId,
+                  email: capturedEmail,
+                  name: capturedName || lead.first_name || '',
+                  tags: [...profileCfg.aWeber.coreTags, `workspace-${(workspaceId || '').substring(0, 8)}`],
+                  customFields: { ig_handle: thread.username, source: 'instagram_dm' },
+                  refreshToken: config.aweberRefreshToken,
+                  clientId: config.aweberClientId,
+                  clientSecret: config.aweberClientSecret,
+                  supabase,
+                  workspaceId,
+                });
 
-              if (aweberResult.success) {
-                log('info', 'AWEBER', `Subscribed ${capturedEmail} to list ${profileCfg.aWeber.listId}${aweberResult.duplicate ? ' (duplicate)' : ''}`);
-              } else {
-                log('warn', 'AWEBER_FAILED', `Failed to subscribe ${capturedEmail}: ${aweberResult.error}`);
+                if (aweberResult.success) {
+                  log('info', 'AWEBER', `Subscribed ${capturedEmail} to list ${profileCfg.aWeber.listId}${aweberResult.duplicate ? ' (duplicate)' : ''}`);
+                } else {
+                  log('warn', 'AWEBER_FAILED', `Failed to subscribe ${capturedEmail}: ${aweberResult.error}`);
+                }
+
+                await supabase.from('leads').update({
+                  email: capturedEmail,
+                  first_name: capturedName || lead.first_name || null,
+                  aweber_status: aweberResult.success ? (aweberResult.duplicate ? 'duplicate' : 'added') : 'failed',
+                  last_updated_at: new Date().toISOString(),
+                }).eq('id', lead.id);
+              } catch (captureErr) {
+                log('warn', 'EMAIL_CAPTURE', `Failed to capture/subscribe email for @${thread.username}: ${captureErr.message}`);
+                await supabase.from('leads').update({
+                  email: capturedEmail,
+                  first_name: capturedName || lead.first_name || null,
+                  aweber_status: 'failed',
+                  last_updated_at: new Date().toISOString(),
+                }).eq('id', lead.id);
               }
-
-              await supabase.from('leads').update({
-                email: capturedEmail,
-                first_name: capturedName || lead.first_name || null,
-                aweber_status: aweberResult.success ? (aweberResult.duplicate ? 'duplicate' : 'added') : 'failed',
-                last_updated_at: new Date().toISOString(),
-              }).eq('id', lead.id);
-            } catch (captureErr) {
-              log('warn', 'EMAIL_CAPTURE', `Failed to capture/subscribe email for @${thread.username}: ${captureErr.message}`);
-              await supabase.from('leads').update({
-                email: capturedEmail,
-                first_name: capturedName || lead.first_name || null,
-                aweber_status: 'failed',
-                last_updated_at: new Date().toISOString(),
-              }).eq('id', lead.id);
             }
           }
 
