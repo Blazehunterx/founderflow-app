@@ -14,6 +14,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - run: node build.js
       - run: npm run build:win
       - uses: actions/upload-artifact@v4
         with:
@@ -29,6 +30,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - run: node build.js
       - run: npx playwright install chromium
       - run: npm run build:mac
       - uses: actions/upload-artifact@v4
