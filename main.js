@@ -30,8 +30,8 @@ function syncEngineFiles() {
     const stat = fs.statSync(src);
     if (stat.isDirectory()) {
       if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
-      // Recurse into subdirectories (but skip node_modules, sessions)
-      if (['node_modules', 'sessions', 'sessions2', 'founderflow_sessions'].includes(file)) continue;
+      // Recurse into subdirectories (but skip node_modules, sessions, desktop — those come from ZIP)
+      if (['node_modules', 'sessions', 'sessions2', 'founderflow_sessions', 'desktop'].includes(file)) continue;
       const subFiles = fs.readdirSync(src);
       for (const sub of subFiles) {
         const subSrc = path.join(src, sub);
@@ -514,10 +514,14 @@ async function updateEngine() {
 
     mainWindow?.webContents.send('engine:log', 'Update complete! Engine files updated.');
 
-    // Check if desktop UI was updated
+    // Check if desktop UI was updated — reload window to show new UI
     const desktopIndex = path.join(ENGINE_DIR, 'desktop', 'index.html');
     if (fs.existsSync(desktopIndex)) {
-      mainWindow?.webContents.send('engine:log', 'Desktop UI updated. Restart the app to see changes.');
+      mainWindow?.webContents.send('engine:log', 'Desktop UI updated. Reloading...');
+      // Reload the window with the updated UI
+      setTimeout(() => {
+        mainWindow?.loadURL('file://' + desktopIndex);
+      }, 1000);
     }
 
     // Re-install deps if package.json changed
