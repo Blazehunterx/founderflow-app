@@ -82,6 +82,12 @@ function createWindow() {
 
   mainWindow.loadFile('index.html');
 
+  // If desktop UI has been updated via "Update Engine", load from ENGINE_DIR
+  const updatedUI = path.join(ENGINE_DIR, 'desktop', 'index.html');
+  if (fs.existsSync(updatedUI)) {
+    mainWindow.loadURL('file://' + updatedUI);
+  }
+
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
@@ -507,6 +513,12 @@ async function updateEngine() {
     fs.unlinkSync(zipPath);
 
     mainWindow?.webContents.send('engine:log', 'Update complete! Engine files updated.');
+
+    // Check if desktop UI was updated
+    const desktopIndex = path.join(ENGINE_DIR, 'desktop', 'index.html');
+    if (fs.existsSync(desktopIndex)) {
+      mainWindow?.webContents.send('engine:log', 'Desktop UI updated. Restart the app to see changes.');
+    }
 
     // Re-install deps if package.json changed
     const nodeModulesExists = fs.existsSync(path.join(ENGINE_DIR, 'node_modules'));
