@@ -530,6 +530,7 @@ function loadSettings() {
     return {
       dmTemplate: config.dmTemplate || '',
       aiTrainingContext: config.aiTrainingContext || '',
+      aiClientFeedback: config.aiClientFeedback || '',
       calendlyLink: config.calendlyLink || '',
       followupDelays: config.followupDelays || [3, 5, 7],
       followupTemplates: config.followupTemplates || ['', '', ''],
@@ -547,6 +548,7 @@ function saveSettings(settings) {
 
   config.dmTemplate = settings.dmTemplate;
   config.aiTrainingContext = settings.aiTrainingContext;
+  config.aiClientFeedback = settings.aiClientFeedback;
   config.calendlyLink = settings.calendlyLink;
   config.followupDelays = settings.followupDelays;
   config.followupTemplates = settings.followupTemplates;

@@ -341,6 +341,7 @@ async function loadSettings() {
   const settings = await window.api.loadSettings();
   document.getElementById('settingDmTemplate').value = settings.dmTemplate || '';
   document.getElementById('settingAiContext').value = settings.aiTrainingContext || '';
+  document.getElementById('settingClientFeedback').value = settings.aiClientFeedback || '';
   document.getElementById('settingCalendly').value = settings.calendlyLink || '';
   document.getElementById('settingNiche').value = (settings.nicheTags || []).join(', ');
 
@@ -355,6 +356,7 @@ async function saveSettings() {
   const settings = {
     dmTemplate: document.getElementById('settingDmTemplate').value,
     aiTrainingContext: document.getElementById('settingAiContext').value,
+    aiClientFeedback: document.getElementById('settingClientFeedback').value,
     calendlyLink: document.getElementById('settingCalendly').value,
     followupDelays: [
       parseInt(document.getElementById('delay0').value) || 3,
