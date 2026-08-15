@@ -28,6 +28,11 @@ contextBridge.exposeInMainWorld('api', {
   openEngineDir: () => ipcRenderer.invoke('app:open-engine-dir'),
   quit: () => ipcRenderer.invoke('app:quit'),
 
+  // Multi-workspace
+  openNewInstance: (workspaceId) => ipcRenderer.invoke('app:open-new-instance', workspaceId),
+  getWorkspaces: () => ipcRenderer.invoke('app:get-workspaces'),
+  getWorkspaceId: () => ipcRenderer.invoke('app:get-workspace-id'),
+
   // Lead Review
   fetchUpcomingLeads: () => ipcRenderer.invoke('app:fetch-upcoming-leads'),
   excludeLead: (leadId, reason) => ipcRenderer.invoke('app:exclude-lead', leadId, reason),

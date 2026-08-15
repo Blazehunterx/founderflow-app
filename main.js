@@ -3,20 +3,59 @@ const path = require('path');
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 
+// ── Multi-instance support ─────────────────────────
+// Parse --workspace=ID from command-line args
+const workspaceArg = process.argv.find(a => a.startsWith('--workspace='));
+const WORKSPACE_ID = workspaceArg ? workspaceArg.split('=')[1] : null;
+
 let mainWindow = null;
 let engineProcess = null;
-let engineState = 'stopped'; // stopped | starting | running | paused | error
+let engineState = 'stopped';
 
 // ── Paths ─────────────────────────────────────────
 const USER_DATA = app.getPath('userData');
 const isDev = !app.isPackaged;
+
+// Per-workspace engine directory: engine-{workspaceId}/ or engine/ (default)
 const ENGINE_DIR = isDev
   ? path.join(__dirname, 'engine')
-  : path.join(USER_DATA, 'engine');
+  : WORKSPACE_ID
+    ? path.join(USER_DATA, `engine-${WORKSPACE_ID}`)
+    : path.join(USER_DATA, 'engine');
+
 const ENGINE_SOURCE = isDev
   ? path.join(__dirname, 'engine')
   : path.join(process.resourcesPath, 'engine');
+
 const CONFIG_PATH = path.join(ENGINE_DIR, 'config.json');
+
+// Workspace registry (tracks all connected workspaces)
+const WORKSPACES_PATH = path.join(USER_DATA, 'workspaces.json');
+
+function loadWorkspaces() {
+  try {
+    if (fs.existsSync(WORKSPACES_PATH)) {
+      return JSON.parse(fs.readFileSync(WORKSPACES_PATH, 'utf8'));
+    }
+  } catch {}
+  return [];
+}
+
+function saveWorkspaces(list) {
+  if (!fs.existsSync(USER_DATA)) fs.mkdirSync(USER_DATA, { recursive: true });
+  fs.writeFileSync(WORKSPACES_PATH, JSON.stringify(list, null, 2));
+}
+
+function registerWorkspace(id, name) {
+  const list = loadWorkspaces();
+  const existing = list.find(w => w.id === id);
+  if (existing) {
+    existing.name = name || existing.name;
+  } else {
+    list.push({ id, name: name || id });
+  }
+  saveWorkspaces(list);
+}
 
 function syncEngineFiles() {
   if (isDev) return;
@@ -30,7 +69,6 @@ function syncEngineFiles() {
     const stat = fs.statSync(src);
     if (stat.isDirectory()) {
       if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
-      // Recurse into subdirectories (but skip node_modules, sessions, desktop — those come from ZIP)
       if (['node_modules', 'sessions', 'sessions2', 'founderflow_sessions', 'desktop'].includes(file)) continue;
       const subFiles = fs.readdirSync(src);
       for (const sub of subFiles) {
@@ -41,7 +79,6 @@ function syncEngineFiles() {
         }
       }
     } else {
-      // Overwrite config.json only if it doesn't exist (preserve user edits)
       if (file === 'config.json' && fs.existsSync(dest)) continue;
       if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
     }
@@ -50,10 +87,7 @@ function syncEngineFiles() {
 
 // Bundled Node.js path (inside app resources)
 function getNodePath() {
-  const isDev = !app.isPackaged;
-  if (isDev) {
-    return 'node'; // Use system node in dev
-  }
+  if (isDev) return 'node';
   const platform = process.platform;
   if (platform === 'win32') {
     return path.join(process.resourcesPath, 'node-runtime', 'node.exe');
@@ -80,9 +114,12 @@ function createWindow() {
     show: false,
   });
 
+  // Set window title with workspace name
+  const wsName = getWorkspaceName();
+  mainWindow.setTitle(wsName ? `FounderFlow — ${wsName}` : 'FounderFlow');
+
   mainWindow.loadFile('index.html');
 
-  // If desktop UI has been updated via "Update Engine", load from ENGINE_DIR
   const updatedUI = path.join(ENGINE_DIR, 'desktop', 'index.html');
   if (fs.existsSync(updatedUI)) {
     mainWindow.loadURL('file://' + updatedUI);
@@ -96,6 +133,17 @@ function createWindow() {
     stopEngine();
     mainWindow = null;
   });
+}
+
+function getWorkspaceName() {
+  if (!WORKSPACE_ID) return null;
+  try {
+    if (fs.existsSync(CONFIG_PATH)) {
+      const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      return config.workspaceName || null;
+    }
+  } catch {}
+  return WORKSPACE_ID.substring(0, 8);
 }
 
 // ── Engine Management ─────────────────────────────
@@ -195,6 +243,22 @@ function resumeEngine() {
   }
 }
 
+// ── Open New Instance ─────────────────────────────
+function openNewInstance(event, targetWorkspaceId) {
+  const appPath = isDev ? process.execPath : process.execPath;
+  const args = [];
+
+  if (targetWorkspaceId) {
+    args.push(`--workspace=${targetWorkspaceId}`);
+  }
+
+  // Launch new instance
+  spawn(appPath, args, {
+    detached: true,
+    stdio: 'ignore',
+  }).unref();
+}
+
 // ── Instagram Login (Playwright) ────────────────────
 let loginBrowser = null;
 let loginContext = null;
@@ -207,7 +271,6 @@ async function openInstagramLogin() {
 
     mainWindow?.webContents.send('deps:log', 'Launching browser for Instagram login...\n');
 
-    // Try system Chrome first, fall back to bundled Chromium
     let launchOpts = {
       headless: false,
       viewport: null,
@@ -222,7 +285,6 @@ async function openInstagramLogin() {
     try {
       loginContext = await chromium.launchPersistentContext(sessionDir, { ...launchOpts, channel: 'chrome' });
     } catch {
-      // No system Chrome — Playwright will use its bundled Chromium
       loginContext = await chromium.launchPersistentContext(sessionDir, launchOpts);
     }
 
@@ -249,12 +311,10 @@ async function openInstagramLogin() {
     mainWindow?.webContents.send('deps:log', 'Browser opened. Log into Instagram in the browser window.\n');
     mainWindow?.webContents.send('deps:log', 'Waiting for login (up to 5 minutes)...\n');
 
-    // Poll for session cookie
     const maxAttempts = 100;
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise(res => setTimeout(res, 3000));
 
-      // Dismiss common popups
       const popups = [
         'button:has-text("Not now")', 'button:has-text("Not Now")',
         'button:has-text("Later")', 'button:has-text("Cancel")',
@@ -326,7 +386,6 @@ async function openInstagramLogin() {
 }
 
 async function captureCookies() {
-  // Playwright flow auto-captures — this is just a fallback
   if (!fs.existsSync(CONFIG_PATH)) {
     return { success: false, error: 'No session found. Click "Login to Instagram" first.' };
   }
@@ -354,7 +413,6 @@ async function downloadConfig(event, workspaceId) {
             const config = JSON.parse(data);
             if (config.error) { resolve({ success: false, error: config.error }); return; }
 
-            // Preserve existing igSession if present
             let existing = {};
             if (fs.existsSync(CONFIG_PATH)) {
               try { existing = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch {}
@@ -363,6 +421,9 @@ async function downloadConfig(event, workspaceId) {
 
             if (!fs.existsSync(ENGINE_DIR)) fs.mkdirSync(ENGINE_DIR, { recursive: true });
             fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+
+            // Register in workspace list
+            registerWorkspace(workspaceId, config.workspaceName);
 
             resolve({ success: true, workspaceName: config.workspaceName });
           } catch (e) {
@@ -378,7 +439,7 @@ async function downloadConfig(event, workspaceId) {
   }
 }
 
-// ── Config Refresh from Dashboard (settings only) ─
+// ── Config Refresh from Dashboard ──────────────────
 async function refreshConfig() {
   try {
     let workspaceId = null;
@@ -406,7 +467,6 @@ async function refreshConfig() {
             const config = JSON.parse(data);
             if (config.error) { resolve({ success: false, error: config.error }); return; }
 
-            // Preserve igSession
             let existing = {};
             if (fs.existsSync(CONFIG_PATH)) {
               try { existing = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch {}
@@ -415,6 +475,11 @@ async function refreshConfig() {
 
             if (!fs.existsSync(ENGINE_DIR)) fs.mkdirSync(ENGINE_DIR, { recursive: true });
             fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+
+            // Update window title
+            if (mainWindow && config.workspaceName) {
+              mainWindow.setTitle(`FounderFlow — ${config.workspaceName}`);
+            }
 
             mainWindow?.webContents.send('engine:log', 'Settings refreshed from dashboard.');
             resolve({ success: true, workspaceName: config.workspaceName });
@@ -434,7 +499,6 @@ async function refreshConfig() {
 // ── Engine Update from Dashboard ──────────────────
 async function updateEngine() {
   try {
-    // Read workspace_id from config
     let workspaceId = null;
     if (fs.existsSync(CONFIG_PATH)) {
       try {
@@ -448,7 +512,6 @@ async function updateEngine() {
 
     mainWindow?.webContents.send('engine:log', 'Downloading update from dashboard...');
 
-    // Stop engine if running
     if (engineProcess) {
       engineProcess.kill('SIGTERM');
       engineProcess = null;
@@ -456,7 +519,6 @@ async function updateEngine() {
       mainWindow?.webContents.send('engine:status', 'stopped');
     }
 
-    // Download ZIP
     const https = require('https');
     const zipPath = path.join(USER_DATA, 'update.zip');
     const url = `https://founderflow-dashboard.vercel.app/api/client/download?engine_update=1&workspace_id=${workspaceId}`;
@@ -478,12 +540,8 @@ async function updateEngine() {
 
     mainWindow?.webContents.send('engine:log', 'Download complete. Extracting...');
 
-    // Preserve config.json and sessions
     const configBackup = fs.existsSync(CONFIG_PATH) ? fs.readFileSync(CONFIG_PATH, 'utf8') : null;
-    const sessionDir = path.join(ENGINE_DIR, 'sessions');
-    const sessionExists = fs.existsSync(sessionDir);
 
-    // Extract with PowerShell
     if (process.platform === 'win32') {
       execSync(`powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${ENGINE_DIR}' -Force"`, {
         encoding: 'utf8',
@@ -496,35 +554,28 @@ async function updateEngine() {
       });
     }
 
-    // Restore config.json
     if (configBackup) {
       fs.writeFileSync(CONFIG_PATH, configBackup);
     }
 
-    // Re-sync engine files from resources (updates bundled engine files)
     syncEngineFiles();
 
-    // Restore config again (syncEngineFiles might overwrite)
     if (configBackup) {
       fs.writeFileSync(CONFIG_PATH, configBackup);
     }
 
-    // Clean up
     fs.unlinkSync(zipPath);
 
     mainWindow?.webContents.send('engine:log', 'Update complete! Engine files updated.');
 
-    // Check if desktop UI was updated — reload window to show new UI
     const desktopIndex = path.join(ENGINE_DIR, 'desktop', 'index.html');
     if (fs.existsSync(desktopIndex)) {
       mainWindow?.webContents.send('engine:log', 'Desktop UI updated. Reloading...');
-      // Reload the window with the updated UI
       setTimeout(() => {
         mainWindow?.loadURL('file://' + desktopIndex);
       }, 1000);
     }
 
-    // Re-install deps if package.json changed
     const nodeModulesExists = fs.existsSync(path.join(ENGINE_DIR, 'node_modules'));
     if (!nodeModulesExists) {
       mainWindow?.webContents.send('engine:log', 'Installing updated dependencies...');
@@ -552,6 +603,8 @@ function loadSettings() {
       followupTemplates: config.followupTemplates || ['', '', ''],
       maxFollowups: config.maxFollowups ?? 3,
       nicheTags: config.nicheTags || [],
+      workspaceId: config.workspaceId || null,
+      workspaceName: config.workspaceName || null,
     };
   } catch { return {}; }
 }
@@ -594,10 +647,12 @@ function checkEnvironment() {
 
   const configExists = fs.existsSync(CONFIG_PATH);
   let hasSession = false;
+  let workspaceName = null;
   if (configExists) {
     try {
       const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
       hasSession = !!config.igSession?.sessionid;
+      workspaceName = config.workspaceName || null;
     } catch {}
   }
 
@@ -610,6 +665,8 @@ function checkEnvironment() {
     hasSession,
     depsInstalled,
     engineDir: ENGINE_DIR,
+    workspaceId: WORKSPACE_ID,
+    workspaceName,
   };
 }
 
@@ -665,6 +722,9 @@ ipcMain.handle('app:update-engine', updateEngine);
 ipcMain.handle('app:install-deps', installDependencies);
 ipcMain.handle('app:open-engine-dir', () => shell.openPath(ENGINE_DIR));
 ipcMain.handle('app:quit', () => app.quit());
+ipcMain.handle('app:open-new-instance', (event, targetWorkspaceId) => openNewInstance(event, targetWorkspaceId));
+ipcMain.handle('app:get-workspaces', () => loadWorkspaces());
+ipcMain.handle('app:get-workspace-id', () => WORKSPACE_ID);
 ipcMain.handle('app:fetch-upcoming-leads', fetchUpcomingLeads);
 ipcMain.handle('app:exclude-lead', excludeLead);
 
@@ -764,6 +824,17 @@ async function excludeLead(event, leadId, reason) {
 }
 
 // ── App Lifecycle ─────────────────────────────────
+// Allow multiple instances (each with different --workspace)
+app.allowSecondInstance = true;
+
+app.on('second-instance', (event, commandLine) => {
+  // When a second instance launches, focus the existing window
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
 app.whenReady().then(() => { syncEngineFiles(); createWindow(); });
 
 app.on('window-all-closed', () => {

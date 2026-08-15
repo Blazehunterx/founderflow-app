@@ -24,6 +24,20 @@ async function checkEnvironment() {
 
   env = await window.api.checkEnvironment();
 
+  // Show workspace name in header if running a specific workspace
+  if (env.workspaceName) {
+    const subtitle = document.querySelector('.subtitle');
+    if (subtitle) subtitle.textContent = `AI Client Acquisition System — ${env.workspaceName}`;
+    document.title = `FounderFlow — ${env.workspaceName}`;
+  }
+
+  // Show "Open New Instance" button if no workspace specified (default instance)
+  const wsId = await window.api.getWorkspaceId();
+  if (!wsId) {
+    const openNewBtn = document.getElementById('btnOpenNew');
+    if (openNewBtn) openNewBtn.style.display = 'flex';
+  }
+
   const setupBody = document.getElementById('setupBody');
   setupBody.innerHTML = '';
 
@@ -72,7 +86,7 @@ async function checkEnvironment() {
     const connectStep = createStep('active', '3', 'Connect to Dashboard', 'Enter your Workspace ID to fetch config', 'connect-dashboard');
     setupBody.appendChild(connectStep);
   } else {
-    const connectStep = createStep('done', '3', 'Connect to Dashboard', 'Config loaded ✓', null);
+    const connectStep = createStep('done', '3', 'Connect to Dashboard', `Connected: ${env.workspaceName || env.workspaceId?.substring(0, 8) || 'workspace'} ✓`, null);
     setupBody.appendChild(connectStep);
   }
 
@@ -150,11 +164,16 @@ function createStep(state, num, title, desc, action) {
         btn.remove();
         appendLog(`Connected to ${result.workspaceName || 'workspace'}`, 'success');
 
-        // Show lead review section
+        // Update window title
+        if (result.workspaceName) {
+          document.title = `FounderFlow — ${result.workspaceName}`;
+          const subtitle = document.querySelector('.subtitle');
+          if (subtitle) subtitle.textContent = `AI Client Acquisition System — ${result.workspaceName}`;
+        }
+
         showLeadReview();
         loadUpcomingLeads();
 
-        // Re-run environment check to update session status
         env = await window.api.checkEnvironment();
         const setupBody = document.getElementById('setupBody');
 
@@ -294,7 +313,7 @@ async function stopEngine() {
 async function pauseEngine() {
   appendLog('Pausing engine...', 'warn');
   await window.api.pauseEngine();
-  await window.api.resumeEngine(); // Resume since we paused
+  await window.api.resumeEngine();
 }
 
 async function updateEngine() {
@@ -334,6 +353,65 @@ async function refreshConfig() {
     btn.textContent = '❌ Failed';
     setTimeout(() => { btn.textContent = '🔄 Refresh Settings'; btn.disabled = false; }, 3000);
   }
+}
+
+// ── Open New Instance ───────────────────────────
+async function openNewInstance() {
+  const btn = document.getElementById('btnOpenNew');
+  btn.disabled = true;
+  btn.textContent = '⏳ Opening...';
+  appendLog('Opening new FounderFlow instance...', 'info');
+
+  // Get workspace list
+  const workspaces = await window.api.getWorkspaces();
+
+  if (workspaces.length === 0) {
+    appendLog('No workspaces configured. Connect to a workspace first.', 'warn');
+    btn.textContent = '➕ Open New';
+    btn.disabled = false;
+    return;
+  }
+
+  // Show workspace picker dialog
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;display:flex;align-items:center;justify-content:center;';
+
+  const dialog = document.createElement('div');
+  dialog.style.cssText = 'background:#1a1a2e;border:1px solid rgba(99,102,241,0.3);border-radius:12px;padding:24px;max-width:400px;width:90%;';
+
+  dialog.innerHTML = `
+    <h3 style="color:#e2e8f0;font-size:16px;margin:0 0 16px;">Open New Instance</h3>
+    <p style="color:#94a3b8;font-size:13px;margin:0 0 16px;">Each instance runs its own engine independently.</p>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
+      ${workspaces.map(w => `
+        <button class="workspace-pick-btn" data-id="${w.id}" style="padding:10px 14px;border-radius:8px;border:1px solid rgba(99,102,241,0.2);background:rgba(99,102,241,0.08);color:#e2e8f0;font-size:13px;cursor:pointer;text-align:left;">
+          ${w.name || w.id.substring(0, 12)}
+        </button>
+      `).join('')}
+    </div>
+    <button id="wsDialogCancel" style="width:100%;padding:8px;border-radius:6px;border:1px solid rgba(100,116,139,0.3);background:transparent;color:#94a3b8;font-size:12px;cursor:pointer;">Cancel</button>
+  `;
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  // Handle workspace selection
+  dialog.querySelectorAll('.workspace-pick-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const targetId = btn.dataset.id;
+      overlay.remove();
+      appendLog(`Launching new instance for workspace ${targetId.substring(0, 8)}...`, 'info');
+      await window.api.openNewInstance(targetId);
+      btn.textContent = '➕ Open New';
+      btn.disabled = false;
+    });
+  });
+
+  document.getElementById('wsDialogCancel').addEventListener('click', () => {
+    overlay.remove();
+    btn.textContent = '➕ Open New';
+    btn.disabled = false;
+  });
 }
 
 // ── Settings ────────────────────────────────────
@@ -522,7 +600,6 @@ async function excludeSelectedLeads() {
 
   appendLog(`Excluded ${successCount} lead(s)${failCount > 0 ? `, ${failCount} failed` : ''}`, successCount > 0 ? 'success' : 'error');
 
-  // Refresh list
   await loadUpcomingLeads();
 }
 
@@ -532,3 +609,4 @@ window.excludeSelectedLeads = excludeSelectedLeads;
 window.updateExcludeButton = updateExcludeButton;
 window.filterLeads = filterLeads;
 window.toggleSelectAll = toggleSelectAll;
+window.openNewInstance = openNewInstance;
