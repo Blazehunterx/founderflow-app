@@ -85,14 +85,46 @@ function syncEngineFiles() {
   }
 }
 
-// Bundled Node.js path (inside app resources)
+// Bundled Node.js path (inside app resources) with fallbacks
 function getNodePath() {
   if (isDev) return 'node';
   const platform = process.platform;
+  const candidates = [];
+
+  // 1. Bundled node-runtime in app resources
   if (platform === 'win32') {
-    return path.join(process.resourcesPath, 'node-runtime', 'node.exe');
+    candidates.push(path.join(process.resourcesPath, 'node-runtime', 'node.exe'));
+  } else {
+    // Build downloads into node-runtime/{arch}/bin/node
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+    candidates.push(path.join(process.resourcesPath, 'node-runtime', arch, 'bin', 'node'));
+    candidates.push(path.join(process.resourcesPath, 'node-runtime', 'bin', 'node'));
   }
-  return path.join(process.resourcesPath, 'node-runtime', 'bin', 'node');
+
+  // 2. node-runtime next to the exe
+  if (platform === 'win32') {
+    candidates.push(path.join(path.dirname(process.execPath), 'node-runtime', 'node.exe'));
+  } else {
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+    candidates.push(path.join(path.dirname(process.execPath), '..', 'Resources', 'node-runtime', arch, 'bin', 'node'));
+  }
+
+  // 3. node.exe in C:\Windows (system-wide install)
+  if (platform === 'win32') {
+    candidates.push('C:\\Windows\\node.exe');
+  }
+
+  // 4. System PATH fallback
+  candidates.push('node');
+
+  for (const candidate of candidates) {
+    try {
+      execSync(`"${candidate}" --version`, { encoding: 'utf8', stdio: 'pipe' });
+      return candidate;
+    } catch {}
+  }
+
+  return candidates[candidates.length - 1];
 }
 
 // ── Window ────────────────────────────────────────

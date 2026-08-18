@@ -507,7 +507,7 @@ async function verifySession(context) {
   return hasUserId && hasCsrf;
 }
 
-async function sendDM(page, handle, fullMessage) {
+async function sendDM(page, handle, fullMessage, lead = null) {
   try {
     // Visit inbox first to clear cookie consent overlay (profile pages trigger it, inbox doesn't)
     await page.goto('https://www.instagram.com/direct/inbox/', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -543,23 +543,26 @@ async function sendDM(page, handle, fullMessage) {
     await purgePopups(page);
     await delay(1000);
 
-    // Click Follow if present (Sponsor's original: synthetic DOM events)
+    // Click Follow if present — native Playwright click, record in DB
     try {
-      await page.evaluate(() => {
-        const textMatch = (el, text) => el.textContent.trim().toLowerCase() === text.toLowerCase();
-        const all = document.querySelectorAll('div[role="button"], button, span');
-        for (const el of all) {
-          if (textMatch(el, 'Follow')) {
-            el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'touch' }));
-            el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
-            el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'touch' }));
-            el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
-            el.click();
-            break;
+      const followBtn = await page.locator('div[role="button"], button, span').filter({ hasText: /^Follow$/i }).first();
+      const isVisible = await followBtn.isVisible({ timeout: 3000 }).catch(() => false);
+      if (isVisible) {
+        await followBtn.click();
+        await delay(2000);
+        log('info', 'FOLLOW_OK', `Followed @${handle}`);
+        if (lead?.id) {
+          try {
+            await supabase.from('leads').update({
+              follow_status: 'followed',
+              followed_at: new Date().toISOString(),
+              last_updated_at: new Date().toISOString()
+            }).eq('id', lead.id);
+          } catch (dbErr) {
+            log('warn', 'FOLLOW_DB_ERR', dbErr.message);
           }
         }
-      });
-      await delay(2000);
+      }
     } catch (e) {}
 
     // Click Message button — try compose URL first (most reliable), then button detection
@@ -784,11 +787,11 @@ async function sendDM(page, handle, fullMessage) {
 }
 
 // Wraps sendDM with a hard timeout to prevent indefinite hangs
-async function sendDMWithTimeout(page, handle, message, timeoutMs = 90000) {
+async function sendDMWithTimeout(page, handle, message, timeoutMs = 90000, lead = null) {
   const timeout = new Promise((resolve) =>
     setTimeout(() => resolve({ success: false, error: 'sendDM timed out' }), timeoutMs)
   );
-  return Promise.race([sendDM(page, handle, message), timeout]);
+  return Promise.race([sendDM(page, handle, message, lead), timeout]);
 }
 
 let stopRequested = false;
@@ -1227,7 +1230,7 @@ async function main() {
     try {
       const { data: s } = await supabase
         .from('settings')
-        .select('dm_template, daily_dm_limit, pulse_interval_h, ai_setter_enabled, ai_training_context, niche_tags, warmup_enabled, warmup_duration_days, warmup_start_date, calendly_link, schedule_enabled, schedule_start_hour, schedule_end_hour, schedule_timezone, followup_0_delay, followup_0_template, followup_1_delay, followup_1_template, followup_2_delay, followup_2_template, max_followups, comment_scan_enabled, comment_scan_target, comment_scan_max_followers, telegram_bot_token, telegram_chat_id, gemini_api_key, grok_api_key, framework_link, pre_dm_likes, blueprint_type, conversation_routing_step, conversation_steps, conversation_enabled, deterministic_funnel')
+        .select('dm_template, daily_dm_limit, pulse_interval_h, ai_setter_enabled, ai_training_context, niche_tags, warmup_enabled, warmup_duration_days, warmup_start_date, calendly_link, schedule_enabled, schedule_start_hour, schedule_end_hour, schedule_timezone, followup_0_delay, followup_0_template, followup_1_delay, followup_1_template, followup_2_delay, followup_2_template, max_followups, comment_scan_enabled, comment_scan_target, comment_scan_max_followers, telegram_bot_token, telegram_chat_id, gemini_api_key, grok_api_key, framework_link, pre_dm_likes, blueprint_type, conversation_routing_step, conversation_steps, conversation_enabled, deterministic_funnel, unfollow_enabled, unfollow_after_days, daily_unfollow_limit, ai_client_feedback')
         .eq('workspace_id', config.workspaceId)
         .maybeSingle();
       if (!s) return false;
@@ -1250,6 +1253,7 @@ async function main() {
       }
       if (s.ai_setter_enabled !== undefined) config.aiSetterEnabled = s.ai_setter_enabled;
       if (s.ai_training_context) config.aiTrainingContext = s.ai_training_context;
+      if (s.ai_client_feedback !== undefined && s.ai_client_feedback !== null) config.aiClientFeedback = s.ai_client_feedback;
       if (s.niche_tags) config.nicheTags = s.niche_tags;
       if (s.warmup_enabled !== undefined) config.warmupEnabled = s.warmup_enabled;
       if (s.warmup_duration_days > 0) config.warmupDurationDays = s.warmup_duration_days;
@@ -1276,6 +1280,9 @@ async function main() {
       if (s.conversation_steps) config.conversationSteps = s.conversation_steps;
       if (s.conversation_enabled !== undefined && s.conversation_enabled !== null) config.conversationEnabled = s.conversation_enabled;
       if (s.deterministic_funnel !== undefined && s.deterministic_funnel !== null) config.deterministicFunnel = s.deterministic_funnel;
+      if (s.unfollow_enabled !== undefined && s.unfollow_enabled !== null) config.unfollowEnabled = s.unfollow_enabled;
+      if (s.unfollow_after_days > 0) config.unfollowAfterDays = s.unfollow_after_days;
+      if (s.daily_unfollow_limit > 0) config.dailyUnfollowLimit = s.daily_unfollow_limit;
 
       if (changed) {
         humanizerConfig = parseHumanizerConfig(template);
@@ -1915,7 +1922,7 @@ async function main() {
         await delay(3000);
         result = { success: true };
       } else {
-        result = await sendDMWithTimeout(page, lead.ig_handle, message);
+        result = await sendDMWithTimeout(page, lead.ig_handle, message, 90000, lead);
       }
 
         if (result.success) {
@@ -2150,6 +2157,15 @@ async function main() {
       }
     }
     if (followupsSentThisPulse > 0) sendTelegram(supabase, `🔄 <b>Follow-ups sent</b> — ${followupsSentThisPulse} this pulse`);
+
+    // ── IDLE UNFOLLOW SEQUENCE ──────────────────────────────────
+    // Run only when outreach/follow-ups are done to avoid detection patterns
+    try {
+      const { runUnfollowSequence } = require('./unfollower.cjs');
+      await runUnfollowSequence({ page, supabase, config, stopRequested });
+    } catch (ufErr) {
+      log('warn', 'UNFOLLOW_ERR', `Idle unfollow sequence failed: ${ufErr.message}`);
+    }
 
     log('success', 'DONE', `Sent ${sent} DMs this cycle.`);
 

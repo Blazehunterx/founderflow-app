@@ -816,6 +816,7 @@ async function checkAndReply(page, supabase, config, context) {
   processedThreads.clear(); // No cross-pulse persistence — conversation state (isMe, terminal step) handles dedup
   const workspaceId = config.workspaceId;
   const trainingContext = config.aiTrainingContext || '';
+  const clientFeedback = config.aiClientFeedback || '';
   const apiKey = config.grokApiKey || config.geminiApiKey || process.env.GROK_API_KEY || process.env.GEMINI_API_KEY;
   const calendlyLink = config.calendlyLink || '';
   const skoolLink = config.skoolLink || '';
@@ -1463,7 +1464,8 @@ async function checkAndReply(page, supabase, config, context) {
     // HARD CLOSE: clear rejection — don't waste a DM slot asking another question
     const t = lastIncoming.toLowerCase().trim();
     const isClearRejection = /^(no$|nope$|nah$|pass$|no thanks$|no thank you$|not interested$|not for me$|i.ll pass$|i am good$|i.m good$|im good$|no need$|not now$|not right now$|skip it$|skip for now$|maybe later$|some other time$|i.m okay$|im okay$|i.m fine$|im fine$|leave me alone$|stop messaging$|don.t contact me$|do not contact me$|not a fit$|not the right time$|already have one$|already doing that$|i.m all set$|im all set$|i.m good for now$|im good for now$|thanks but no$|thank you but no$|not looking for$|not seeking$|not wanting$|not interested in$|decline$|no longer interested$|count me out$|i will pass$|unable to commit$|can.t commit$|cannot commit$|not ready$|not able to$|in therapy$|my therapist$|therapist (said|recommended|advised|suggested)|not in a position$|not (able|in) to (commit|join|participate)|not the right (time|moment)|can.t (join|participate|commit) (right now|at the moment|currently)$)/i.test(t) || /\b(not interested|not now|skip it|skip for now|maybe later|i.ll pass|i am good|i.m all set|im all set|not a fit|not the right time|decline|count me out|no longer interested|unable to commit|can.t commit|in therapy|therapist|not ready|not able to)\b/i.test(t);
-    if (isClearRejection && convoStep > 0 && convoStep < TERMINAL_STEP) {
+    const currentConvoStep = lead?.conversation_step || 0;
+    if (isClearRejection && currentConvoStep > 0 && currentConvoStep < TERMINAL_STEP) {
       repliedThreads.add(thread.threadId);
       detail.action = 'closed_rejection';
       log('info', 'AI_CLOSE', `@${thread.username}: clear rejection "${lastIncoming}" — closing`);
@@ -1792,6 +1794,7 @@ async function checkAndReply(page, supabase, config, context) {
       const systemPrompt = `You are replying to Instagram DMs on behalf of the account owner. Use the persona and voice described below. Never reveal you are an AI.
 
 ${sanitizeForGemini(trainingContext) || 'Be warm, direct, and professional. Short messages, 1-2 sentences max. No abbreviations like "u" or "lol". No emoji unless the person uses them first.'}
+${clientFeedback ? '\n\nAdditional feedback and notes from the client:\n' + sanitizeForGemini(clientFeedback) : ''}
 
 Rules:
 - Write SHORT messages. 1-2 sentences max. Never more than 3.
@@ -1903,7 +1906,7 @@ Rules:
       const routeRaw = 'Conversation history with @' + thread.username + ':\n' + conversation + '\n\nTheir latest message: "' + lastIncoming + '"\n\nReply naturally to their message. Write SHORT \u2014 1-2 sentences max, one continuous line, no line breaks. Match the tone and speaking style from the business context above. Never reveal you\'re following a script. NEVER ask for their name \u2014 you already know it. Only share your link if they explicitly ask for it or the conversation naturally leads to it. Never proactively drop the link.';
       const routePrompt = sanitizeForGemini(routeRaw);
 
-      let reply = await callAI(apiKey, routePrompt, 3, sanitizeForGemini(trainingContext) || null, config);
+      let reply = await callAI(apiKey, routePrompt, 3, sanitizeForGemini(trainingContext) + (clientFeedback ? '\n\nAdditional feedback and notes from the client:\n' + sanitizeForGemini(clientFeedback) : '') || null, config);
       if (!reply) continue;
 
       const cleanReply = reply.trim();
@@ -1978,7 +1981,7 @@ Examples:
     const exchangeCount = messages ? messages.filter(m => m.text && m.text.trim()).length : 0;
     const rawPrompt = `${stepContext}\n\nReply to @${thread.username}:`;
     const fullPrompt = sanitizeForGemini(rawPrompt);
-    const sysInst = trainingContext ? sanitizeForGemini(trainingContext) : null;
+    const sysInst = trainingContext ? sanitizeForGemini(trainingContext) + (clientFeedback ? '\n\nAdditional feedback and notes from the client:\n' + sanitizeForGemini(clientFeedback) : '') : null;
 
     let reply = await callAI(apiKey, fullPrompt, 3, sysInst, config);
     if (!reply) continue;
