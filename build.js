@@ -78,6 +78,33 @@ async function fetchEngineFiles() {
     console.log('   Extracted ' + files.length + ' files:');
     files.forEach(f => console.log('   + ' + f));
 
+    // CLEAN: remove any config.json, state.json, sessions, and debug files
+    // New builds must be blank — user connects with their own workspace + IG login
+    const cleanTargets = ['config.json', 'state.json', 'fingerprint.json', 'comment_scan_state.json'];
+    for (const target of cleanTargets) {
+      const fp = path.join(DEST_ENGINE, target);
+      if (fs.existsSync(fp)) {
+        fs.unlinkSync(fp);
+        console.log('   CLEAN: removed ' + target);
+      }
+    }
+    const cleanDirs = ['sessions', 'sessions2', 'founderflow_sessions'];
+    for (const dir of cleanDirs) {
+      const dp = path.join(DEST_ENGINE, dir);
+      if (fs.existsSync(dp)) {
+        fs.rmSync(dp, { recursive: true, force: true });
+        console.log('   CLEAN: removed ' + dir + '/');
+      }
+    }
+    // Remove any .log and debug PNG files
+    const engineFiles = fs.readdirSync(DEST_ENGINE);
+    for (const f of engineFiles) {
+      if (f.endsWith('.log') || f.startsWith('debug_') || f.endsWith('.png')) {
+        fs.unlinkSync(path.join(DEST_ENGINE, f));
+        console.log('   CLEAN: removed ' + f);
+      }
+    }
+
     // Verify package.json exists
     if (!fs.existsSync(path.join(DEST_ENGINE, 'package.json'))) {
       console.log('   WARNING: package.json not found in extracted files');
