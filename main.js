@@ -397,10 +397,16 @@ async function openInstagramLogin() {
           });
         } catch {}
 
+        // Save username to config if we got it
+        if (username) {
+          config.igSession.username = username;
+          fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+        }
+
         await loginContext.close();
         loginContext = null;
 
-        return { success: true, userId: username || cookieMap.ds_user_id };
+        return { success: true, userId: username || cookieMap.ds_user_id, username };
       }
 
       if (i % 5 === 0 && i > 0) {
@@ -428,6 +434,54 @@ async function captureCookies() {
     }
   } catch {}
   return { success: false, error: 'No valid session found. Click "Login to Instagram" first.' };
+}
+
+// ── Instagram Account Management ────────────────────
+function getIgAccount() {
+  if (!fs.existsSync(CONFIG_PATH)) {
+    return { connected: false, username: null, userId: null, capturedAt: null };
+  }
+  try {
+    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    const session = config.igSession;
+    if (!session?.sessionid) {
+      return { connected: false, username: null, userId: null, capturedAt: null };
+    }
+    return {
+      connected: true,
+      username: session.username || null,
+      userId: session.ds_user_id || null,
+      capturedAt: session.capturedAt || null,
+    };
+  } catch {
+    return { connected: false, username: null, userId: null, capturedAt: null };
+  }
+}
+
+async function switchIgAccount() {
+  // Stop engine first if running
+  if (engineProcess) {
+    engineProcess.kill('SIGTERM');
+    engineProcess = null;
+    engineState = 'stopped';
+    mainWindow?.webContents.send('engine:status', 'stopped');
+    mainWindow?.webContents.send('engine:log', 'Engine stopped for account switch');
+  }
+
+  // Clear old session from sessions dir
+  const sessionDir = path.join(ENGINE_DIR, 'sessions');
+  if (fs.existsSync(sessionDir)) {
+    try {
+      const files = fs.readdirSync(sessionDir);
+      for (const f of files) {
+        const fp = path.join(sessionDir, f);
+        if (fs.statSync(fp).isFile()) fs.unlinkSync(fp);
+      }
+    } catch {}
+  }
+
+  // Open login flow
+  return await openInstagramLogin();
 }
 
 // ── Config Download from Dashboard ────────────────
@@ -757,6 +811,8 @@ ipcMain.handle('app:quit', () => app.quit());
 ipcMain.handle('app:open-new-instance', (event, targetWorkspaceId) => openNewInstance(event, targetWorkspaceId));
 ipcMain.handle('app:get-workspaces', () => loadWorkspaces());
 ipcMain.handle('app:get-workspace-id', () => WORKSPACE_ID);
+ipcMain.handle('app:get-ig-account', getIgAccount);
+ipcMain.handle('app:switch-ig-account', switchIgAccount);
 ipcMain.handle('app:fetch-upcoming-leads', fetchUpcomingLeads);
 ipcMain.handle('app:exclude-lead', excludeLead);
 

@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('api', {
   // Instagram
   openInstagram: () => ipcRenderer.invoke('app:open-instagram'),
   captureCookies: () => ipcRenderer.invoke('app:capture-cookies'),
+  getIgAccount: () => ipcRenderer.invoke('app:get-ig-account'),
+  switchIgAccount: () => ipcRenderer.invoke('app:switch-ig-account'),
 
   // Settings
   loadSettings: () => ipcRenderer.invoke('app:load-settings'),

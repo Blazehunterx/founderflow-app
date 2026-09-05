@@ -6,6 +6,7 @@ let env = null;
 window.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
   await checkEnvironment();
+  await loadIgAccount();
 });
 
 function setupEventListeners() {
@@ -218,6 +219,9 @@ function createStep(state, num, title, desc, action) {
         btn.remove();
         setDot('igPill', 'ok');
         appendLog(`Instagram session captured successfully`, 'success');
+
+        // Refresh IG account display
+        await loadIgAccount();
 
         const setupBody = document.getElementById('setupBody');
         const readyStep = createStep('done', '4', 'Ready', 'All checks passed. Start the engine.', null);
@@ -460,6 +464,73 @@ function setDot(pillId, state) {
     if (dot) dot.className = `status-dot ${state}`;
   }
 }
+
+// ── IG Account Display ──────────────────────────
+async function loadIgAccount() {
+  const info = document.getElementById('igAccountInfo');
+  if (!info) return;
+
+  const account = await window.api.getIgAccount();
+
+  if (!account.connected) {
+    info.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span class="status-dot error" style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; flex-shrink: 0;"></span>
+        <span style="font-size: 12px; color: #ef4444;">No account connected</span>
+      </div>
+    `;
+    setDot('igPill', 'error');
+    return;
+  }
+
+  const display = account.username || `User #${account.userId || 'unknown'}`;
+  const timeAgo = account.capturedAt ? getTimeAgo(account.capturedAt) : 'unknown';
+
+  info.innerHTML = `
+    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+      <span class="status-dot ok" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; flex-shrink: 0;"></span>
+      <span style="font-size: 13px; font-weight: 600; color: #e2e8f0;">@${display}</span>
+    </div>
+    <div style="font-size: 11px; color: var(--text-muted); padding-left: 16px;">
+      Connected ${timeAgo}
+    </div>
+  `;
+}
+
+function getTimeAgo(dateStr) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+async function switchIgAccount() {
+  const btn = document.getElementById('btnSwitchIg');
+  btn.disabled = true;
+  btn.textContent = '⏳ Opening browser...';
+  appendLog('Switching Instagram account — opening login browser...', 'info');
+
+  const result = await window.api.switchIgAccount();
+
+  if (result.success) {
+    appendLog(`Switched to @${result.username || result.userId || 'unknown'}`, 'success');
+    await loadIgAccount();
+    env = await window.api.checkEnvironment();
+    setDot('igPill', 'ok');
+    btn.textContent = '✅ Switched';
+    setTimeout(() => { btn.textContent = '🔄 Switch Account'; btn.disabled = false; }, 2000);
+  } else {
+    appendLog(`Switch failed: ${result.error}`, 'error');
+    btn.textContent = '❌ Failed';
+    setTimeout(() => { btn.textContent = '🔄 Switch Account'; btn.disabled = false; }, 3000);
+  }
+}
+
+window.switchIgAccount = switchIgAccount;
 
 // ── Lead Review ───────────────────────────────────
 let upcomingLeads = [];
