@@ -27,6 +27,10 @@
       "!engine/founderflow_sessions",
       "!engine/*.log",
       "!engine/*.txt",
+      "!engine/debug_*",
+      "!engine/test_*",
+      "!engine/npm.cmd",
+      "!engine/npx.cmd",
       "!engine/state.json",
       "!engine/fingerprint.json",
       "!engine/comment_scan_state.json",
@@ -42,7 +46,12 @@
           "!**/node_modules/**",
           "!**/sessions/**",
           "!**/sessions2/**",
-          "!**/founderflow_sessions/**"
+          "!**/founderflow_sessions/**",
+          "!**/debug_*",
+          "!**/test_*",
+          "!**/*.cmd",
+          "!**/npm.cmd",
+          "!**/npx.cmd"
         ]
       },
       {
