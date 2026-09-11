@@ -1,6 +1,6 @@
 {
   "name": "founderflow",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "FounderFlow — AI Client Acquisition System",
   "main": "main.js",
   "scripts": {
